@@ -1,0 +1,1 @@
+export fun add(value: Int, amount: Int = 1) -> Int = value + amount

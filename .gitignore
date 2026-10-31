@@ -1,0 +1,22 @@
+# Local agent state and development reports
+/.codex/
+/.bifoil/development/
+
+# Local editor state
+/.idea/
+/.vscode/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+
+# Rust build outputs
+/target/
+/dist/
+
+# Disposable incremental module artifacts
+**/.bifoil/cache/
+
+# Python tool bytecode
+__pycache__/
+*.pyc
