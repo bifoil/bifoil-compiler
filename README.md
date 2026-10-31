@@ -256,12 +256,34 @@ upstream ChoiceScript. No release, remote, license selection, or third-party rel
 Scanner output stays under ignored `.bifoil/development/sonar/`. Use scanner-based analysis with automatic analysis
 disabled for this project. A completed analysis and its quality gate are separate from passing local tests.
 
-Generate the Clippy import before scanning:
+Install the developer coverage tools once, with `uv` available on PATH:
 
 ```sh
-mkdir -p .bifoil/development/sonar
-cargo clippy --locked --all-targets --message-format=json -- -D warnings > .bifoil/development/sonar/clippy.jsonl
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked --version 0.9.1
 ```
+
+Collect coverage and Clippy diagnostics before scanning:
+
+```sh
+bash tools/collect-coverage.sh
+cargo clippy --locked --all-targets --message-format=json -- -D warnings > .bifoil/development/sonar/clippy.jsonl
+sonar-scanner
+```
+
+The coverage collector runs all Rust unit and CLI tests in the release profile with LLVM instrumentation and two test
+threads. Debug information is retained for coverage mappings. Reported source paths are relative to this checkout, so
+the LCOV report can also be imported by a scanner running on another host. Coverage collection is a developer check;
+instrumented execution is not a resource-performance measurement.
+
+The same command runs the Python tooling tests with pinned Coverage.py through `uv`, including subprocess coverage.
+The process-failure controls require a POSIX host. Rust LCOV and Python XML reports stay under the ignored development
+directory and are published only after both test runs succeed. Ordinary Rust test sources are omitted by
+cargo-llvm-cov's defaults; Python test files are omitted from the production report. Unexecuted production code remains
+in the coverage denominator. Scanner settings import both reports; Clippy diagnostics are separate from coverage.
+
+Sonar's default gate evaluates new code. Its passing status alone does not certify overall compiler coverage, full
+language conformance, or release readiness. Inspect the measured overall coverage separately.
 
 The benchmark tools are local operator commands. The caller selects trusted compiler/Node executables and an output
 workspace. Tools pass separate argument entries without a shell, and fixed report names stay below the selected

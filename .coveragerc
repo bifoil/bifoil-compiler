@@ -1,0 +1,13 @@
+[run]
+branch = True
+relative_files = True
+source = tools
+patch = subprocess
+parallel = True
+data_file = .bifoil/development/sonar/python.coverage
+
+[report]
+omit = tools/test_*.py
+
+[xml]
+output = .bifoil/development/sonar/python-coverage.xml
