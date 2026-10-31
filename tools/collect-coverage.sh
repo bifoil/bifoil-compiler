@@ -15,6 +15,9 @@ command -v uv >/dev/null
 temporary_directory="$(mktemp -d "$report_directory/coverage.XXXXXX")"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 
+# Resource-observer tests use the ordinary compiler, without LLVM instrumentation.
+cargo build --release --locked
+
 # Retain coverage mappings despite the production profile's stripped binaries.
 export CARGO_PROFILE_RELEASE_DEBUG=2
 export CARGO_PROFILE_RELEASE_STRIP=none
@@ -24,7 +27,8 @@ cargo llvm-cov --release --locked --all-targets --remap-path-prefix \
 # The conformance-runner tests execute Python subprocesses; include those runs.
 coverage_command=(uv run --no-project --with coverage==7.17.0 --python python3 python -m coverage)
 "${coverage_command[@]}" erase
-"${coverage_command[@]}" run -m unittest discover -s tools -p 'test_*.py'
+BIFOIL_TEST_COMPILER="$repository_root/target/release/bifoilc" \
+    "${coverage_command[@]}" run -m unittest discover -s tools -p 'test_*.py'
 "${coverage_command[@]}" combine
 "${coverage_command[@]}" xml -o "$temporary_directory/python-coverage.xml"
 

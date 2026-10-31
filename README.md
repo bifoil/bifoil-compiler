@@ -250,11 +250,11 @@ upstream ChoiceScript. No release, remote, license selection, or third-party rel
 
 ## Sonar analysis
 
-[SonarQube Cloud](https://sonarcloud.io/dashboard?id=bifoil_bifoil-compiler) analyzes this public repository.
-[Scanner settings](sonar-project.properties) separate original production sources from tests. Run the standard
-`sonar-scanner` with `SONAR_TOKEN` supplied through the environment; never save a token in source or command arguments.
-Scanner output stays under ignored `.bifoil/development/sonar/`. Use scanner-based analysis with automatic analysis
-disabled for this project. A completed analysis and its quality gate are separate from passing local tests.
+[SonarQube Cloud](https://sonarcloud.io/dashboard?id=bifoil_bifoil-compiler) analyzes this public repository. [Scanner
+settings](sonar-project.properties) separate original production sources from tests. Run the standard `sonar-scanner`
+with `SONAR_TOKEN` supplied through the environment; never save a token in source or command arguments. Scanner output
+stays under ignored `.bifoil/development/sonar/`. Use scanner-based analysis with automatic analysis disabled for this
+project. A completed analysis and its quality gate are separate from passing local tests.
 
 Install the developer coverage tools once, with `uv` available on PATH:
 
@@ -276,22 +276,26 @@ threads. Debug information is retained for coverage mappings. Reported source pa
 the LCOV report can also be imported by a scanner running on another host. Coverage collection is a developer check;
 instrumented execution is not a resource-performance measurement.
 
-The same command runs the Python tooling tests with pinned Coverage.py through `uv`, including subprocess coverage.
-The process-failure controls require a POSIX host. Rust LCOV and Python XML reports stay under the ignored development
-directory and are published only after both test runs succeed. Ordinary Rust test sources are omitted by
+The same command builds the ordinary release compiler, then runs the Python tooling tests with pinned Coverage.py
+through `uv`, including subprocess coverage. The tooling integration tests require Linux and GNU Time. They exercise
+actual compiler processes on generated projects: cache invalidation, exact artifact comparisons, source-free linking,
+Unicode edits, report retention, and deliberate child failures. The observer tests use the ordinary compiler rather than
+its instrumented counterpart. To run them separately, build the release compiler and set `BIFOIL_TEST_COMPILER` to its
+executable path when invoking Python's unittest discovery. Rust LCOV and Python XML reports stay under the ignored
+development directory and are published only after both test runs succeed. Ordinary Rust test sources are omitted by
 cargo-llvm-cov's defaults; Python test files are omitted from the production report. Unexecuted production code remains
 in the coverage denominator. Scanner settings import both reports; Clippy diagnostics are separate from coverage.
 
 This project uses the same `Bifoil ChoiceScript` quality gate as Bifoil ChoiceScript. It requires at least 90% overall
-and new-code coverage, at most 1% overall and new-code duplication, A ratings for new reliability/security/maintainability,
-and review of all new security hotspots. Language rule profiles match the reference project's profiles.
+and new-code coverage, at most 1% overall and new-code duplication, and A ratings for new reliability, security, and
+maintainability. It also requires review of all new security hotspots. Language rule profiles match the reference
+project's profiles.
 
 Coverage measurements and the gate result are separate from full language conformance and release readiness. The
-measured overall coverage below is currently below this gate's 90% requirement.
-
-The 2026-10-31 analysis reports 94.9% Rust line coverage: 16,917 covered source lines out of 17,821. Overall repository
-coverage is 83.0%, including the Python tooling and its mostly untested benchmark helpers. This stable-toolchain
-workflow collects Rust line coverage; it does not measure Rust branch coverage.
+2026-10-31 collection exercised 570 Rust unit tests, 43 CLI tests, and 26 Python tooling tests. Rust line coverage is
+94.9%: 16,917 covered source lines out of 17,821. Python tooling coverage now includes real benchmark/report workflows,
+with every production tool retained in the coverage denominator. See Sonar for the current combined repository measure.
+This stable-toolchain workflow collects Rust line coverage; it does not measure Rust branch coverage.
 
 The benchmark tools are local operator commands. The caller selects trusted compiler/Node executables and an output
 workspace. Tools pass separate argument entries without a shell, and fixed report names stay below the selected
