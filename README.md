@@ -285,6 +285,10 @@ in the coverage denominator. Scanner settings import both reports; Clippy diagno
 Sonar's default gate evaluates new code. Its passing status alone does not certify overall compiler coverage, full
 language conformance, or release readiness. Inspect the measured overall coverage separately.
 
+The 2026-10-31 analysis reports 94.9% Rust line coverage: 16,917 covered source lines out of 17,821. Overall repository
+coverage is 83.0%, including the Python tooling and its mostly untested benchmark helpers. This stable-toolchain
+workflow collects Rust line coverage; it does not measure Rust branch coverage.
+
 The benchmark tools are local operator commands. The caller selects trusted compiler/Node executables and an output
 workspace. Tools pass separate argument entries without a shell, and fixed report names stay below the selected
 workspace. These explicit executable and output arguments are part of the tools' interface.
