@@ -247,3 +247,18 @@ samples; larger interfaces still need paging for the intended capacity target.
 Compiler implementation belongs here; language decisions remain in Bifoil Language and execution belongs in Bifoil
 Runtime. No vendored ChoiceScript source is modified or incorporated. Bifoil is independent of Choice of Games and
 upstream ChoiceScript. No release, remote, license selection, or third-party relicensing is established here.
+
+## Sonar analysis
+
+[SonarQube Cloud](https://sonarcloud.io/dashboard?id=bifoil_bifoil-compiler) analyzes this public repository.
+[Scanner settings](sonar-project.properties) separate original production sources from tests. Run the standard
+`sonar-scanner` with `SONAR_TOKEN` supplied through the environment; never save a token in source or command arguments.
+Scanner output stays under ignored `.bifoil/development/sonar/`. Use scanner-based analysis with automatic analysis
+disabled for this project. A completed analysis and its quality gate are separate from passing local tests.
+
+Generate the Clippy import before scanning:
+
+```sh
+mkdir -p .bifoil/development/sonar
+cargo clippy --locked --all-targets --message-format=json -- -D warnings > .bifoil/development/sonar/clippy.jsonl
+```
