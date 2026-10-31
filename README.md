@@ -262,3 +262,7 @@ Generate the Clippy import before scanning:
 mkdir -p .bifoil/development/sonar
 cargo clippy --locked --all-targets --message-format=json -- -D warnings > .bifoil/development/sonar/clippy.jsonl
 ```
+
+The benchmark tools are local operator commands. The caller selects trusted compiler/Node executables and an output
+workspace. Tools pass separate argument entries without a shell, and fixed report names stay below the selected
+workspace. These explicit executable and output arguments are part of the tools' interface.
