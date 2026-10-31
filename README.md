@@ -282,8 +282,12 @@ directory and are published only after both test runs succeed. Ordinary Rust tes
 cargo-llvm-cov's defaults; Python test files are omitted from the production report. Unexecuted production code remains
 in the coverage denominator. Scanner settings import both reports; Clippy diagnostics are separate from coverage.
 
-Sonar's default gate evaluates new code. Its passing status alone does not certify overall compiler coverage, full
-language conformance, or release readiness. Inspect the measured overall coverage separately.
+This project uses the same `Bifoil ChoiceScript` quality gate as Bifoil ChoiceScript. It requires at least 90% overall
+and new-code coverage, at most 1% overall and new-code duplication, A ratings for new reliability/security/maintainability,
+and review of all new security hotspots. Language rule profiles match the reference project's profiles.
+
+Coverage measurements and the gate result are separate from full language conformance and release readiness. The
+measured overall coverage below is currently below this gate's 90% requirement.
 
 The 2026-10-31 analysis reports 94.9% Rust line coverage: 16,917 covered source lines out of 17,821. Overall repository
 coverage is 83.0%, including the Python tooling and its mostly untested benchmark helpers. This stable-toolchain
