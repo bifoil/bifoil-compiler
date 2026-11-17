@@ -59,11 +59,6 @@ impl Parser<'_> {
                     self.line_index += 1;
                     continue;
                 }
-                let directive = raw.trim_start().strip_prefix('@').unwrap().trim_start();
-                if directive.starts_with('#') || directive.starts_with("//") {
-                    self.line_index += 1;
-                    continue;
-                }
                 if !paragraph.is_empty() {
                     statements.push(Statement {
                         line: start,

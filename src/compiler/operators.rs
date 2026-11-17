@@ -123,3 +123,6 @@ pub(super) fn binary_type(op: &str, a: &Type, b: &Type) -> Result<Type, String> 
     }
     Err(format!("operator '{op}' cannot combine {a} and {b}"))
 }
+
+#[cfg(test)]
+mod tests;

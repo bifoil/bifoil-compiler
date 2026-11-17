@@ -250,3 +250,6 @@ pub(super) fn check_call_bounds(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -7,12 +7,20 @@ use crate::syntax::{Expr, Pattern, WhenCase};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// Parentheses group an expression without changing its case value. Keep the
+/// original AST for lowering, and share this view across coverage and narrowing.
+pub(super) fn value_expression(pattern: &Pattern) -> Option<&Expr> {
+    if let Pattern::Value(value) = pattern {
+        Some(super::overloads::ungroup(value))
+    } else {
+        None
+    }
+}
+
 /// Resolve case aliases to declaration identities before proving coverage.
 /// Source spelling is insufficient after an import or expected-type shorthand.
 fn constant_variant(value: &Expr, expected: &Type, env: &super::ScopeStack) -> Result<Option<String>, String> {
-    if let Expr::Group(inner) = value {
-        return constant_variant(inner, expected, env);
-    }
+    let value = super::overloads::ungroup(value);
     let binding = if let Some(binding) = super::static_symbol(value, env) {
         Some(binding)
     } else if let Expr::Name(name) = value {
@@ -75,7 +83,7 @@ pub(super) fn when_exhaustive(
                 )
         });
         let null = subject.is_none_or(|s| !s.permits_null())
-            || covered.iter().any(|p| matches!(p, Pattern::Value(Expr::Null)));
+            || covered.iter().any(|p| matches!(value_expression(p), Some(Expr::Null)));
         if !def.variants.is_empty() && all && null {
             return Ok(true);
         }
@@ -93,15 +101,17 @@ pub(super) fn when_exhaustive(
             continue;
         }
         for pattern in &case.patterns {
-            match pattern {
-                Pattern::Value(Expr::Boolean(value)) => {
+            match (pattern, value_expression(pattern)) {
+                (_, Some(Expr::Boolean(value))) => {
                     if subject.is_none() && *value {
                         whole = true
                     }
                     if *value { yes = true } else { no = true }
                 }
-                Pattern::Value(Expr::Null) => null = true,
-                Pattern::Type { ty, negate: false, .. } if subject.is_some_and(|s| s.subtype_of(ty)) => whole = true,
+                (_, Some(Expr::Null)) => null = true,
+                (Pattern::Type { ty, negate: false, .. }, _) if subject.is_some_and(|s| s.subtype_of(ty)) => {
+                    whole = true
+                }
                 _ => {}
             }
         }
@@ -472,7 +482,10 @@ impl Compiler {
                 .guard
                 .as_ref()
                 .is_none_or(|guard| super::constants::constant_boolean(guard) == Some(true))
-                && case.patterns.iter().any(|p| matches!(p, Pattern::Value(Expr::Null)))
+                && case
+                    .patterns
+                    .iter()
+                    .any(|p| matches!(value_expression(p), Some(Expr::Null)))
             {
                 null_covered = true
             }

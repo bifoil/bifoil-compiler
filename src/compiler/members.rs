@@ -367,3 +367,6 @@ pub(super) fn access_member(receiver: &Type, name: &str, env: &ScopeStack) -> Re
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -281,15 +281,15 @@ pub(super) fn narrow_case(
     let view = crate::generics::member_view(subject.present());
     let mut narrowed = None;
     for pattern in &case.patterns {
-        let ty = match pattern {
-            Pattern::Type { ty, negate: false, .. } => Some(ty.clone()),
+        let ty = match (pattern, super::patterns::value_expression(pattern)) {
+            (Pattern::Type { ty, negate: false, .. }, _) => Some(ty.clone()),
             // A null branch does not erase a generic subject's identity. It
             // still belongs to T, even when T happens to be nullable at this call.
-            Pattern::Value(Expr::Null) if matches!(subject.present(), Type::Parameter { .. }) => Some(subject.clone()),
-            Pattern::Value(Expr::Null) => Some(Type::Null),
-            Pattern::Value(Expr::Boolean(_)) if view == Type::Boolean => Some(subject.non_null()),
-            Pattern::Value(Expr::String(_) | Expr::Char(_) | Expr::Int(_) | Expr::Float(_)) => Some(subject.non_null()),
-            Pattern::Value(value) => super::infer_as(value, env, Some(subject))
+            (_, Some(Expr::Null)) if matches!(subject.present(), Type::Parameter { .. }) => Some(subject.clone()),
+            (_, Some(Expr::Null)) => Some(Type::Null),
+            (_, Some(Expr::Boolean(_))) if view == Type::Boolean => Some(subject.non_null()),
+            (_, Some(Expr::String(_) | Expr::Char(_) | Expr::Int(_) | Expr::Float(_))) => Some(subject.non_null()),
+            (_, Some(value)) => super::infer_as(value, env, Some(subject))
                 .ok()
                 .filter(|ty| *ty != Type::Pending && !ty.permits_null())
                 .map(|_| subject.non_null()),

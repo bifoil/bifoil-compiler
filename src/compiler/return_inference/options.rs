@@ -163,3 +163,6 @@ fn when(
     super::when_values(subject, binding, annotation, cases, env, &mut analysis, &mut values)?;
     Ok(values.choices.finish(Type::Nothing))
 }
+
+#[cfg(test)]
+mod tests;

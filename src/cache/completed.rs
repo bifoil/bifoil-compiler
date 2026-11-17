@@ -271,8 +271,206 @@ fn verify_batches<T: Sync, R: Send>(entries: &[T], check: impl Fn(&[T]) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::verify_batches;
+    use super::*;
+    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+
+    struct CompletedFixture {
+        directory: PathBuf,
+        cache: Cache,
+        record: Completed,
+    }
+    impl Drop for CompletedFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+    impl CompletedFixture {
+        fn new(packaged: bool, artifact: bool) -> Self {
+            let directory = std::env::temp_dir().join(format!(
+                "bifoil-completed-contract-{}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&directory).unwrap();
+            for name in ["src", "cache", "artifacts", "output"] {
+                fs::create_dir(directory.join(name)).unwrap();
+            }
+            let cache = Cache {
+                directory: directory.join("cache"),
+                compiler: "original-compiler-identity".into(),
+                observed: BTreeMap::new(),
+                compiled: 0,
+                reused: 0,
+            };
+            let context = BuildContext::new(
+                &directory,
+                &directory.join("artifacts"),
+                "start",
+                None,
+                &directory.join("output/startup.txt"),
+                packaged,
+            )
+            .unwrap();
+            fs::write(&context.output, "Original generated output").unwrap();
+            let hash = |path: &Path| crate::input::hash(path, MAX_ARTIFACT, None, Instant::now()).unwrap();
+            // Completed-build reuse checks byte identities. The independent
+            // module-admission tests own semantic validation of module bodies.
+            let input = if artifact {
+                let path = context.artifact_root.join("helpers.bfm.json");
+                fs::write(&path, "Original published module bytes").unwrap();
+                ModuleInput::Artifact {
+                    artifact_sha256: hash(&path),
+                }
+            } else {
+                let source = context.source_root.join("helpers.bfl");
+                fs::write(&source, "export fun read() = 1\n").unwrap();
+                fs::write(cache.path("helpers"), "Original private cache bytes").unwrap();
+                ModuleInput::Source {
+                    source_sha256: hash(&source),
+                    cache_sha256: hash(&cache.path("helpers")),
+                }
+            };
+            let mut chunks = BTreeMap::new();
+            if packaged {
+                let name = format!("bifoil_code_{}.txt", "a".repeat(64));
+                let path = directory.join("output").join(&name);
+                fs::write(&path, "Original code chunk").unwrap();
+                chunks.insert(name, hash(&path));
+            }
+            let record = Completed {
+                format: "bifoil.completed.v2".into(),
+                compiler: cache.compiler.clone(),
+                output: OutputFiles {
+                    root_sha256: hash(&context.output),
+                    chunks,
+                },
+                context,
+                modules: BTreeMap::from([("helpers".into(), input)]),
+                legacy_sha256: crate::artifact::digest(&BTreeMap::<String, String>::new()).unwrap(),
+                digest: String::new(),
+            };
+            Self {
+                directory,
+                cache,
+                record,
+            }
+        }
+        fn publish(&mut self) {
+            self.record.digest.clear();
+            self.record.digest = crate::artifact::digest(&self.record).unwrap();
+            fs::write(
+                self.cache.directory.join("completed.json"),
+                serde_json::to_vec(&self.record).unwrap(),
+            )
+            .unwrap();
+        }
+        fn reused(&self) -> Option<usize> {
+            self.cache.try_completed(&self.record.context, Instant::now()).unwrap()
+        }
+    }
+
+    #[test]
+    fn coverage_completed_builds_reject_each_stale_metadata_identity() {
+        for kind in [
+            "format",
+            "compiler",
+            "digest",
+            "empty-modules",
+            "invalid-module",
+            "legacy",
+            "chunk-count",
+        ] {
+            let mut fixture = CompletedFixture::new(true, false);
+            fixture.publish();
+            assert_eq!(fixture.reused(), Some(1), "intact control: {kind}");
+            match kind {
+                "format" => fixture.record.format = "old-format".into(),
+                "compiler" => fixture.record.compiler = "old-compiler".into(),
+                "digest" => {}
+                "empty-modules" => fixture.record.modules.clear(),
+                "invalid-module" => {
+                    let value = fixture.record.modules.remove("helpers").unwrap();
+                    fixture.record.modules.insert("../outside".into(), value);
+                }
+                "legacy" => fixture.record.legacy_sha256 = "stale".into(),
+                "chunk-count" => fixture.record.output.chunks.clear(),
+                _ => unreachable!(),
+            }
+            fixture.publish();
+            if kind == "digest" {
+                let path = fixture.cache.directory.join("completed.json");
+                let text = fs::read_to_string(&path).unwrap();
+                fs::write(path, text.replace(&fixture.record.digest, "stale")).unwrap();
+            }
+            assert_eq!(fixture.reused(), None, "stale metadata accepted: {kind}");
+        }
+    }
+
+    #[test]
+    fn coverage_completed_builds_recheck_source_cache_artifact_and_output_bytes() {
+        for kind in [
+            "source",
+            "cache",
+            "artifact",
+            "source-override",
+            "output",
+            "chunk",
+            "unsafe-chunk",
+        ] {
+            let artifact = kind == "artifact" || kind == "source-override";
+            let mut fixture = CompletedFixture::new(true, artifact);
+            fixture.publish();
+            assert_eq!(fixture.reused(), Some(usize::from(!artifact)), "intact control: {kind}");
+            let context = &fixture.record.context;
+            let path = match kind {
+                "source" | "source-override" => context.source_root.join("helpers.bfl"),
+                "cache" => fixture.cache.path("helpers"),
+                "artifact" => context.artifact_root.join("helpers.bfm.json"),
+                "output" => context.output.clone(),
+                "chunk" => fixture
+                    .directory
+                    .join("output")
+                    .join(fixture.record.output.chunks.keys().next().unwrap()),
+                "unsafe-chunk" => {
+                    let checksum = fixture.record.output.chunks.pop_first().unwrap().1;
+                    fixture.record.output.chunks.insert("../outside.txt".into(), checksum);
+                    fixture.publish();
+                    assert_eq!(fixture.reused(), None);
+                    continue;
+                }
+                _ => unreachable!(),
+            };
+            fs::write(path, "Changed after the successful build").unwrap();
+            assert_eq!(fixture.reused(), None, "changed bytes accepted: {kind}");
+        }
+    }
+
+    #[test]
+    fn coverage_chunk_names_and_unbundled_output_reject_noncanonical_shapes() {
+        let hash = "a".repeat(64);
+        assert!(valid_chunk_file(&format!("bifoil_code_{hash}.txt")));
+        for name in [
+            "../outside.txt".into(),
+            format!("bifoil_code_{}.txt", "a".repeat(63)),
+            format!("bifoil_code_{}.txt", "A".repeat(64)),
+            format!("bifoil_code_{hash}.json"),
+        ] {
+            assert!(!valid_chunk_file(&name), "{name}");
+        }
+        let mut fixture = CompletedFixture::new(false, false);
+        fixture.publish();
+        assert_eq!(fixture.reused(), Some(1));
+        fixture
+            .record
+            .output
+            .chunks
+            .insert(format!("bifoil_code_{hash}.txt"), "stale".into());
+        fixture.publish();
+        assert_eq!(fixture.reused(), None);
+    }
 
     #[test]
     fn optional_misses_join_all_workers_with_the_callers_deadline() {

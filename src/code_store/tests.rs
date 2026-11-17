@@ -461,6 +461,12 @@ fn canonical_serialization_rejects_a_header_under_another_function_identity() {
             .unwrap_err()
             .contains("stored function header changed")
     );
+    let checksum =
+        crate::function_catalog::HeaderDigest(header_checksum(&module.functions["identity.answer"]).unwrap());
+    assert!(matches!(
+        store.runtime_header("identity.answer", &checksum, "identity"),
+        Err(error) if error.contains("stored function header changed: identity.answer")
+    ));
 }
 
 #[test]

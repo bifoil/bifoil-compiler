@@ -174,3 +174,6 @@ impl Common {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

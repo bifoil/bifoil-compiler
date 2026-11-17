@@ -156,3 +156,102 @@ fn projected_nonnull_results_preserve_their_present_value_refinement() {
         Type::String
     );
 }
+
+#[test]
+fn coverage_projected_bounds_resolve_known_arguments_and_conservative_cycles() {
+    let _session = crate::declarations::AnalysisSession::enter();
+    let mut bounded = definition(Some(Type::parameter("U")));
+    bounded.parameters.push(GenericParam {
+        name: "U".into(),
+        variance: 0,
+        bounds: vec![Type::String],
+    });
+    let unknown = Type::named("Box", vec![Type::Star, Type::Star]);
+    assert_eq!(read_type(&Type::parameter("T"), &unknown, &bounded), Type::String);
+    let known = Type::named("Box", vec![Type::Star, Type::Int]);
+    assert_eq!(read_type(&Type::parameter("T"), &known, &bounded), Type::Int);
+    bounded.parameters[1].bounds = vec![Type::parameter("T")];
+    assert_eq!(
+        read_type(&Type::parameter("T"), &unknown, &bounded),
+        Type::Any.nullable()
+    );
+}
+
+#[test]
+fn coverage_projected_capabilities_do_not_replace_value_bounds() {
+    let _session = crate::declarations::AnalysisSession::enter();
+    let receiver = Type::named("Box", vec![Type::Star]);
+    let mut bounded = definition(None);
+    bounded.parameters[0].bounds = vec![
+        Type::named("Equatable", vec![]),
+        Type::named("StableKey", vec![]),
+        Type::Any,
+        Type::String,
+        Type::Any,
+    ];
+    assert_eq!(read_type(&Type::parameter("T"), &receiver, &bounded), Type::String);
+    for (bound, expected) in [
+        (Type::named("List", vec![Type::parameter("T")]), Type::Any),
+        (
+            Type::named("List", vec![Type::parameter("T")]).nullable(),
+            Type::Any.nullable(),
+        ),
+    ] {
+        bounded.parameters[0].bounds = vec![bound];
+        assert_eq!(read_type(&Type::parameter("T"), &receiver, &bounded), expected);
+    }
+    assert!(super::hidden_parameters(&Type::Int, &bounded).is_empty());
+}
+
+#[test]
+fn coverage_projected_input_views_retain_invariance_and_unavailable_scene_arguments() {
+    let _session = crate::declarations::AnalysisSession::enter();
+    let receiver = Type::named("Box", vec![Type::Star]);
+    let bounded = definition(Some(Type::String));
+    let invariant = Type::named("MutableList", vec![Type::parameter("T")]);
+    assert_eq!(super::input_type(&invariant, &receiver, &bounded), Type::Nothing);
+    let covariant = Type::named("List", vec![Type::parameter("T")]);
+    assert_eq!(
+        super::input_type(&covariant, &receiver, &bounded),
+        Type::named("List", vec![Type::Nothing])
+    );
+    let scene = Type::Scene {
+        params: vec![Type::parameter("T")].into(),
+    };
+    assert_eq!(read_type(&scene, &receiver, &bounded), Type::Any.nullable());
+    assert_eq!(super::input_type(&scene, &receiver, &bounded), Type::Nothing);
+    let unresolved = Type::named("Unresolved", vec![Type::parameter("T")]);
+    assert_eq!(read_type(&unresolved, &receiver, &bounded), Type::Any);
+}
+
+#[test]
+fn coverage_projected_methods_apply_lower_input_and_generic_bounds_without_mutating_headers() {
+    let _session = crate::declarations::AnalysisSession::enter();
+    let receiver = Type::named("Box", vec![Type::Star]);
+    let bounded = definition(Some(Type::String));
+    let signature = Arc::new(crate::model::SignatureData {
+        id: "original.Box.read".into(),
+        generics: vec![GenericParam {
+            name: "U".into(),
+            variance: 0,
+            bounds: vec![Type::parameter("T"), Type::Any],
+        }],
+        params: vec![crate::model::Param {
+            name: "value".into(),
+            ty: Type::parameter("T"),
+            mutable: false,
+            default: true,
+            vararg: false,
+        }]
+        .into(),
+        result: Type::parameter("T"),
+        suspend: true,
+        scene: false,
+    });
+    let projected = super::method(&signature, &receiver, &bounded);
+    assert_eq!(projected.generics[0].bounds, [Type::Nothing, Type::Any]);
+    assert_eq!(projected.params[0].ty, Type::Nothing);
+    assert_eq!(projected.result, Type::String);
+    assert!(projected.suspend && projected.params[0].default);
+    assert_eq!(signature.params[0].ty, Type::parameter("T"));
+}

@@ -328,3 +328,6 @@ fn construction(target: &Type, source: &Type) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests;

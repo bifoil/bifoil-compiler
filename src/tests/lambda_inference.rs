@@ -299,3 +299,64 @@ fn authored_unreachable_returns_retain_their_type_checks() {
         .is_err()
     );
 }
+
+#[test]
+fn coverage_contextual_factories_preserve_explicit_results_and_container_keys() {
+    for (left, right, suffix) in [
+        ("[() => ::chooseFirst]", "[() => ::chooseSecond]", "[0]()(3)"),
+        (
+            "mutable [() => ::chooseFirst]",
+            "mutable [() => ::chooseSecond]",
+            "[0]()(3)",
+        ),
+        (
+            "{\"call\": () => ::chooseFirst}",
+            "{\"call\": () => ::chooseSecond}",
+            "[\"call\"]!!()(3)",
+        ),
+        ("[[() => ::chooseFirst]]", "[[() => ::chooseSecond]]", "[0][0]()(3)"),
+        (
+            "(() -> (Int) -> Int => ::chooseFirst)",
+            "(() -> (Int) -> Int => ::chooseSecond)",
+            "()(3)",
+        ),
+    ] {
+        let source =
+            format!("scene start():\n    val factory = pair({left}, {right})\n    val result: Int = factory{suffix}\n");
+        with_callbacks(&source).unwrap_or_else(|error| panic!("{error}\n{source}"));
+    }
+}
+
+#[test]
+fn coverage_unresolved_factory_sets_and_map_keys_remain_ineligible() {
+    for (left, right) in [
+        ("{::chooseFirst}", "{::chooseSecond}"),
+        ("mutable {::chooseFirst}", "mutable {::chooseSecond}"),
+        ("{::chooseFirst: 1}", "{::chooseSecond: 2}"),
+        ("{null: ::chooseFirst}", "{null: ::chooseSecond}"),
+        ("[null]", "[null]"),
+        ("{}", "{}"),
+    ] {
+        let source = format!("scene start():\n    val result = pair({left}, {right})\n");
+        assert!(
+            with_callbacks(&source).is_err(),
+            "untyped or unstable literal admitted:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn coverage_annotated_callback_factory_results_are_checked_before_joining_alternatives() {
+    with_callbacks(
+        r#"scene start():
+    val factory = pair(() -> (Int) -> Int => ::chooseFirst, () -> (Int) -> Int => ::chooseSecond)
+    val result: Int = factory()(3)
+"#,
+    )
+    .expect("explicit callback results must remain valid when compatible");
+    let incompatible = r#"scene start():
+    val factory = pair(() -> (Float) -> Float => ::chooseFirst, () -> (Float) -> Float => ::chooseSecond)
+"#;
+    crate::parser::parse(incompatible, "src/test.bfl").expect("annotated factory syntax must parse");
+    assert!(with_callbacks(incompatible).is_err());
+}

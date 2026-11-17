@@ -197,7 +197,7 @@ pub(super) fn when_statement(
             && case
                 .patterns
                 .iter()
-                .any(|pattern| matches!(pattern, Pattern::Value(Expr::Null)))
+                .any(|pattern| matches!(super::super::patterns::value_expression(pattern), Some(Expr::Null)))
         {
             null_covered = true;
         }
