@@ -305,7 +305,7 @@ cargo-llvm-cov's defaults; Python test files are omitted from the production rep
 in the coverage denominator. Scanner settings import both reports; Clippy diagnostics are separate from coverage.
 
 This project shares the `Bifoil strict` quality gate and language rule profiles with Bifoil ChoiceScript. The gate
-requires at least 90% overall and new-code condition coverage, zero overall and new security/reliability/maintainability
+requires at least 100% overall and new-code condition coverage, zero overall and new security/reliability/maintainability
 issues, and the existing coverage, duplication, rating, and security-hotspot review conditions. CI separately verifies
 measured test execution in every production source file; declaration-only Rust modules require reviewed, source-hashed
 compilation-test evidence.
