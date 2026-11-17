@@ -53,7 +53,10 @@ class NativeCompilerTest(unittest.TestCase):
                     runpy.run_path(str(TOOLS / name), run_name="__main__")
                     status = 0
                 except SystemExit as error:
-                    status = error.code or 0
+                    code = error.code
+                    status = 0 if code is None else code if isinstance(code, int) else 1
+                    if code is not None and not isinstance(code, int):
+                        errors.write(str(code) + "\n")
         message = output.getvalue() + errors.getvalue()
         if expected is None:
             self.assertNotEqual(status, 0, message)

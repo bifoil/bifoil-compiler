@@ -1,0 +1,19 @@
+{
+  "format": "bifoil.source-tests.v1",
+  "compile_only": {
+    "src/compiler.rs": {
+      "sha256": "355f9fd7d31194f4ef0b4f13674d87ccf13559ffe247efb949c6d664f21e18ac",
+      "test": "tests/cli.rs",
+      "case": "independently_compiled_module_survives_source_removal",
+      "reason": "This module contains imports, module declarations, and the Compiler state structure. The named CLI test constructs that state while compiling and linking a source-free module. The file has no executable coverage locations."
+    }
+  },
+  "command_contracts": {
+    "tools/collect-coverage.sh": {
+      "sha256": "85746847417b8a81a00cbc898a6640b5a482b94419ced80c085277110c4a4750",
+      "test": "tools/test_coverage_collector.py",
+      "case": "test_shell_collection_promotes_only_complete_observations",
+      "reason": "The test executes an exact copy of this shell source in owned temporary storage, substitutes external command boundaries, and verifies publication, failure, and staging cleanup."
+    }
+  }
+}

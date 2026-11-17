@@ -282,13 +282,15 @@ cargo install cargo-llvm-cov --locked --version 0.9.1
 Collect coverage and Clippy diagnostics before scanning:
 
 ```sh
-bash tools/collect-coverage.sh
+bash tools/collect-coverage.sh /path/to/language /path/to/runtime /path/to/choicescript/web/scene.js
 cargo clippy --locked --all-targets --message-format=json -- -D warnings > .bifoil/development/sonar/clippy.jsonl
 sonar-scanner
 ```
 
 The coverage collector runs all Rust unit and CLI tests in the release profile with LLVM instrumentation and two test
-threads. Debug information is retained for coverage mappings. Reported source paths are relative to this checkout, so
+threads. It also executes the language conformance corpus against that compiler. Supply explicit language, runtime,
+and unmodified engine paths; the CI workflow pins each public dependency by commit. No sibling checkout is assumed.
+Debug information is retained for coverage mappings. Reported source paths are relative to this checkout, so
 the LCOV report can also be imported by a scanner running on another host. Coverage collection is a developer check;
 instrumented execution is not a resource-performance measurement.
 
@@ -302,16 +304,17 @@ development directory and are published only after both test runs succeed. Ordin
 cargo-llvm-cov's defaults; Python test files are omitted from the production report. Unexecuted production code remains
 in the coverage denominator. Scanner settings import both reports; Clippy diagnostics are separate from coverage.
 
-This project uses the same `Bifoil ChoiceScript` quality gate as Bifoil ChoiceScript. It requires at least 90% overall
-and new-code coverage, at most 1% overall and new-code duplication, and A ratings for new reliability, security, and
-maintainability. It also requires review of all new security hotspots. Language rule profiles match the reference
-project's profiles.
+This project shares the `Bifoil strict` quality gate and language rule profiles with Bifoil ChoiceScript. The gate
+requires at least 90% overall and new-code condition coverage, zero overall and new security/reliability/maintainability
+issues, and the existing coverage, duplication, rating, and security-hotspot review conditions. CI separately verifies
+measured test execution in every production source file; declaration-only Rust modules require reviewed, source-hashed
+compilation-test evidence.
 
-Coverage measurements and the gate result are separate from full language conformance and release readiness. The
-2026-10-31 collection exercised 570 Rust unit tests, 43 CLI tests, and 26 Python tooling tests. Rust line coverage is
-94.9%: 16,917 covered source lines out of 17,821. Python tooling coverage now includes real benchmark/report workflows,
-with every production tool retained in the coverage denominator. See Sonar for the current combined repository measure.
-This stable-toolchain workflow collects Rust line coverage; it does not measure Rust branch coverage.
+The coverage observer uses native LLVM branch instrumentation. Rust 1.99.1 requires an unstable instrumentation flag,
+so the collector scopes `RUSTC_BOOTSTRAP=1` to that developer-only observation command. The ordinary compiler build stays
+on the stable toolchain. Actual branch outcomes are reported alongside Python tooling branches; statement hits never
+stand in for condition outcomes. Uncovered branches remain in the report. See Sonar for the latest measurements and
+gate result, which are separate from full language conformance and release readiness.
 
 The benchmark tools are local operator commands. The caller selects trusted compiler/Node executables and an output
 workspace. Tools pass separate argument entries without a shell, and fixed report names stay below the selected

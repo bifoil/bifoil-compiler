@@ -2,6 +2,8 @@
 
 import json
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -67,6 +69,35 @@ class ChildFailures(unittest.TestCase):
                     "    print(json.dumps({'output': [], 'options': [], 'error': None}))",
                 ]
             )
+            if hang:
+                # A native sleeper keeps Python coverage startup outside the
+                # half-second timeout under test. exec preserves the direct
+                # child's PID, so the existing reap assertion remains meaningful.
+                shell = shutil.which("sh")
+                sleeper = shutil.which("sleep")
+                self.assertIsNotNone(shell)
+                self.assertIsNotNone(sleeper)
+                lines = [
+                    "#!" + shell,
+                    'phase="$1"',
+                    'case "$phase" in *.mjs) phase=execution ;; esac',
+                    'if [ "$phase" = format ]; then',
+                    '    for argument do',
+                    '        if [ "$argument" = --check ]; then phase=format_check; fi',
+                    '    done',
+                    'fi',
+                    'if [ "$phase" = ' + shlex.quote(phase) + ' ]; then',
+                ]
+                if expected_error:
+                    lines.append("    printf '%s\\n' 'expected diagnostic' >&2")
+                lines.extend([
+                    "    printf '%s' \"$$\" > " + shlex.quote(str(root / "child.pid")),
+                    "    exec " + shlex.quote(sleeper) + " 30",
+                    "fi",
+                    'if [ "$phase" = execution ]; then',
+                    "    printf '%s\\n' '{\"output\":[],\"options\":[],\"error\":null}'",
+                    "fi",
+                ])
             stub.write_text("\n".join(lines) + "\n")
             stub.chmod(0o700)
             case = {"id": "child-control", "source": "scene start():\n    Unit\n"}

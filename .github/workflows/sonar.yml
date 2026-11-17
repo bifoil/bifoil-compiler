@@ -1,0 +1,191 @@
+name: Sonar quality policy
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.21.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: 3.14.2
+      - name: Install the pinned coverage observer
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --component llvm-tools-preview --component clippy
+          cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bifoil/bifoil-language
+          ref: 737d22db4e8b266844ef2fe89e3f167ab105a65c
+          path: .bifoil/development/sonar/dependencies/language
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bifoil/bifoil-runtime
+          ref: 67e0dfa9a757e400688368a30da60695eaa4eedd
+          path: .bifoil/development/sonar/dependencies/runtime
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dfabulich/choicescript
+          ref: 60a6c3ee7393c9ee7e42650b8e1642ae38e3cb6a
+          path: .bifoil/development/sonar/dependencies/choicescript
+          persist-credentials: false
+      - name: Collect native and tooling coverage
+        id: coverage
+        run: >-
+          bash tools/collect-coverage.sh
+          .bifoil/development/sonar/dependencies/language
+          .bifoil/development/sonar/dependencies/runtime
+          .bifoil/development/sonar/dependencies/choicescript/web/scene.js
+      - name: Check Clippy and export its findings
+        run: cargo clippy --locked --all-targets --message-format=json -- -D warnings > .bifoil/development/sonar/clippy.jsonl
+      - name: Require test evidence for each production source file
+        run: |
+          python3 - <<'PY'
+          """Require measured test execution in every analyzed production source file."""
+          import fnmatch
+          import hashlib
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+          import xml.etree.ElementTree as XML
+
+          root = Path.cwd().resolve()
+          properties = {}
+          for row in (root / "sonar-project.properties").read_text().splitlines():
+              if row.strip() and not row.lstrip().startswith("#"):
+                  key, value = row.split("=", 1)
+                  properties[key.strip()] = value.strip()
+
+          def patterns(key):
+              return [item.strip() for item in properties.get(key, "").split(",") if item.strip()]
+
+          def matches(path, values):
+              return any(fnmatch.fnmatchcase(path, value) for value in values)
+
+          extensions = {".rs", ".py", ".js", ".mjs", ".cjs", ".ts", ".kt", ".go", ".c", ".h", ".sh"}
+          sources = set()
+          files = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], text=True)
+          for name in set(files.split("\0")) - {""}:
+              file = root / name
+              if file.is_file() and file.suffix in extensions:
+                  test = matches(name, patterns("sonar.test.inclusions") + patterns("sonar.coverage.exclusions"))
+                  test = test or any(file.is_relative_to(root / base) for base in patterns("sonar.tests") if not patterns("sonar.test.inclusions"))
+                  if not test and not matches(name, patterns("sonar.exclusions")):
+                      sources.add(name)
+          covered = set()
+          reported = set()
+
+          def record(name, hits):
+              path = Path(name)
+              if path.is_absolute():
+                  if not path.is_relative_to(root):
+                      return
+                  name = path.relative_to(root).as_posix()
+              name = name.replace("\\", "/")
+              reported.add(name)
+              if hits:
+                  covered.add(name)
+
+          for key in ("sonar.javascript.lcov.reportPaths", "sonar.rust.lcov.reportPaths"):
+              for name in patterns(key):
+                  text = (root / name).read_text()
+                  for block in text.split("end_of_record"):
+                      file = re.search(r"^SF:([^\r\n]+)", block, re.M)
+                      if file:
+                          record(file[1], any(int(value) > 0 for value in re.findall(r"^DA:\d+,(\d+)", block, re.M)))
+          for name in patterns("sonar.python.coverage.reportPaths"):
+              document = XML.parse(root / name).getroot()
+              bases = [element.text or "" for element in document.findall("./sources/source")]
+              for item in document.findall(".//class"):
+                  filename = item.attrib["filename"]
+                  candidates = [Path(filename), *(Path(base) / filename for base in bases)]
+                  selected = next((path for path in candidates if (root / path).is_file()), None)
+                  if selected is None:
+                      raise SystemExit("Unresolvable coverage source: " + filename)
+                  record(str(selected), any(int(line.attrib["hits"]) > 0 for line in item.findall("./lines/line")))
+          for name in patterns("sonar.go.coverage.reportPaths"):
+              module = re.search(r"^module\s+(\S+)", (root / "go.mod").read_text(), re.M)[1]
+              rows = (root / name).read_text().splitlines()
+              if not rows or rows[0] not in {"mode: set", "mode: count", "mode: atomic"}:
+                  raise SystemExit("Invalid Go coverage header")
+              for row in rows[1:]:
+                  location, statements, hits = row.split()
+                  file = location.rsplit(":", 1)[0]
+                  if int(statements) < 0 or int(hits) < 0:
+                      raise SystemExit("Invalid Go coverage counters")
+                  record(file.removeprefix(module + "/"), int(hits) > 0)
+          for name in patterns("sonar.coverageReportPaths"):
+              for item in XML.parse(root / name).getroot().findall("file"):
+                  record(item.attrib["path"], any(line.attrib["covered"] == "true" for line in item.findall("lineToCover")))
+          for name in patterns("sonar.coverage.jacoco.xmlReportPaths"):
+              for package in XML.parse(root / name).getroot().findall("package"):
+                  for item in package.findall("sourcefile"):
+                      suffix = package.attrib["name"] + "/" + item.attrib["name"]
+                      for candidate in sources:
+                          if candidate.endswith(suffix):
+                              record(candidate, any(int(line.attrib["ci"]) > 0 for line in item.findall("line")))
+          if not sources:
+              raise SystemExit("No production source files selected; refusing an empty test check")
+          mapping = root / "source-test-map.json"
+          compile_tested = set()
+          if mapping.is_file():
+              for name, evidence in json.loads(mapping.read_text())["compile_only"].items():
+                  path = root / name
+                  text = path.read_text()
+                  test = root / evidence["test"]
+                  if name not in sources or path.suffix != ".rs":
+                      raise SystemExit("Invalid declaration-only source: " + name)
+                  if hashlib.sha256(path.read_bytes()).hexdigest() != evidence["sha256"]:
+                      raise SystemExit("Declaration-only source changed; review its test mapping: " + name)
+                  if re.search(r"^\s*(?:(?:pub(?:\([^)]*\))?|async|unsafe)\s+)*(?:fn|impl|const|static)\b", text, re.M):
+                      raise SystemExit("Executable Rust source cannot use compilation-only evidence: " + name)
+                  expression = r"#\[test\]\s*fn\s+" + re.escape(evidence["case"]) + r"\("
+                  if not test.is_file() or not re.search(expression, test.read_text()):
+                      raise SystemExit("Missing compilation test: " + name)
+                  compile_tested.add(name)
+                  print("COMPILE-TESTED " + name + " via " + evidence["test"] + "::" + evidence["case"])
+          if mapping.is_file():
+              for name, evidence in json.loads(mapping.read_text()).get("command_contracts", {}).items():
+                  path = root / name
+                  test = root / evidence["test"]
+                  if name not in sources or path.suffix != ".sh":
+                      raise SystemExit("Invalid command-tested source: " + name)
+                  if hashlib.sha256(path.read_bytes()).hexdigest() != evidence["sha256"]:
+                      raise SystemExit("Command source changed; review its execution test mapping: " + name)
+                  expression = r"^\s+def\s+" + re.escape(evidence["case"]) + r"\(self\)"
+                  if not test.is_file() or not test.name.startswith("test_") or not re.search(expression, test.read_text(), re.M):
+                      raise SystemExit("Missing command execution test: " + name)
+                  compile_tested.add(name)
+                  print("COMMAND-TESTED " + name + " via " + evidence["test"] + "::" + evidence["case"])
+          missing = sorted(sources - covered - compile_tested)
+          for name in missing:
+              print(("UNTESTED " if name in reported else "UNMEASURED ") + name)
+          print(f"Test evidence verified for {len(sources - set(missing))}/{len(sources)} production source files")
+          if missing:
+              raise SystemExit(1)
+          PY
+      - name: Submit measured coverage and wait for the strict Sonar gate
+        if: >-
+          always() && steps.coverage.outcome == 'success' && github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
+        with:
+          args: -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

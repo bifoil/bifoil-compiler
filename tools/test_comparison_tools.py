@@ -166,13 +166,15 @@ class ComparisonTools(NativeCompilerTest):
             "--output",
             self.root / "unused",
         ]
-        self.run_tool(
-            "compare-code.py",
-            [*common, "--workloads", "control", "control"],
-            expected=None,
-        )
+        for script in ["compare-code.py", "compare-cyclic.py"]:
+            self.run_tool(
+                script,
+                [*common, "--workloads", "control", "control"],
+                expected=None,
+            )
         for name, extra in [
             ("compare-code.py", []),
+            ("compare-cyclic.py", []),
             (
                 "compare-typing.py",
                 ["--control", "scoped-vals", "--workload", "parameter-vals"],
@@ -224,3 +226,11 @@ class ComparisonTools(NativeCompilerTest):
             {path.as_posix() for path in tool.artifact_paths(self.root)},
             {"startup.txt"},
         )
+
+    def test_importing_the_cyclic_comparison_does_not_start_a_measurement(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            tool = load_tool("compare-cyclic.py")
+        self.assertTrue(callable(tool.main))
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(list(self.root.iterdir()), [])

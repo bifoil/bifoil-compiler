@@ -5,6 +5,16 @@ set -euo pipefail
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
+if [[ $# -ne 3 ]]; then
+    printf 'Usage: %s LANGUAGE_ROOT RUNTIME_ROOT CHOICESCRIPT_SCENE_JS\n' "$0" >&2
+    exit 64
+fi
+language_root="$(realpath -- "$1")"
+runtime_root="$(realpath -- "$2")"
+engine="$(realpath -- "$3")"
+[[ -d "$language_root/conformance" && -f "$runtime_root/tools/execute-conformance.mjs" && -f "$engine" ]]
+command -v node >/dev/null
+
 report_directory=.bifoil/development/sonar
 mkdir -p "$report_directory"
 # A failed collection must not leave an earlier report available to the scanner.
@@ -21,8 +31,27 @@ cargo build --release --locked
 # Retain coverage mappings despite the production profile's stripped binaries.
 export CARGO_PROFILE_RELEASE_DEBUG=2
 export CARGO_PROFILE_RELEASE_STRIP=none
-cargo llvm-cov --release --locked --all-targets --remap-path-prefix \
+# Rust 1.99.1 exposes branch counters through an unstable instrumentation flag.
+# Scope this opt-in to the coverage observer; the production build above stays stable.
+RUSTC_BOOTSTRAP=1 cargo llvm-cov --branch --release --locked --all-targets --remap-path-prefix \
     --lcov --output-path "$temporary_directory/rust.lcov" -- --test-threads=2
+
+# Exercise the published language corpus with the same instrumented compiler.
+# Dependencies are explicit arguments, never inferred from sibling checkouts.
+case_indexes=()
+while IFS= read -r -d '' index; do
+    case_indexes+=("$index")
+done < <(find "$language_root/conformance" -maxdepth 1 -type f -name '*.json' ! -name steering.json -print0 | sort -z)
+if [[ ${#case_indexes[@]} -eq 0 ]]; then
+    printf 'No conformance case indexes found.\n' >&2
+    exit 1
+fi
+LLVM_PROFILE_FILE="$repository_root/target/llvm-cov-target/conformance-%4m.profraw" \
+    python3 tools/run-conformance.py \
+    --compiler "$repository_root/target/llvm-cov-target/release/bifoilc" \
+    --runtime "$runtime_root" --node "$(command -v node)" --engine "$engine" \
+    --cases "${case_indexes[@]}" --jobs 4
+cargo llvm-cov report --release --remap-path-prefix --lcov --output-path "$temporary_directory/rust.lcov"
 
 # The conformance-runner tests execute Python subprocesses; include those runs.
 coverage_command=(uv run --no-project --with coverage==7.17.0 --python python3 python -m coverage)
