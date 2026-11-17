@@ -23,7 +23,7 @@ pub(super) fn infer_block_result(
     };
     match &last.kind {
         StatementKind::Expression(e) => infer_value(e, &scope, expected),
-        StatementKind::Return(_) => Ok(Type::Nothing.into()),
+        StatementKind::Return(_) | StatementKind::ImplicitReturn => Ok(Type::Nothing.into()),
         StatementKind::If { branches, no } => {
             if no.is_empty() {
                 return Err("value-producing if requires else".into());
@@ -78,7 +78,7 @@ pub(super) fn yieldize(body: &[Statement], expected: &Type) -> Result<Vec<Statem
                     cases,
                 }
             }
-            StatementKind::Return(_) => last.kind.clone(),
+            StatementKind::Return(_) | StatementKind::ImplicitReturn => last.kind.clone(),
             _ => {
                 let line = last.line;
                 body.push(Statement {
@@ -100,7 +100,7 @@ pub(super) fn returnize(body: &[Statement], discard: bool) -> Vec<Statement> {
     if discard {
         body.push(Statement {
             line: body.last().map_or(1, |s| s.line),
-            kind: StatementKind::Return(None),
+            kind: StatementKind::ImplicitReturn,
         });
         return body;
     }
@@ -118,19 +118,19 @@ pub(super) fn returnize(body: &[Statement], discard: bool) -> Vec<Statement> {
                     case.body = returnize(&case.body, false)
                 }
             }
-            StatementKind::Return(_) => {}
+            StatementKind::Return(_) | StatementKind::ImplicitReturn => {}
             _ => {
                 let line = last.line;
                 body.push(Statement {
                     line,
-                    kind: StatementKind::Return(None),
+                    kind: StatementKind::ImplicitReturn,
                 })
             }
         }
     } else {
         body.push(Statement {
             line: 1,
-            kind: StatementKind::Return(None),
+            kind: StatementKind::ImplicitReturn,
         })
     }
     body
@@ -157,5 +157,8 @@ pub(super) fn lambda_definition(
     } else {
         infer_returns(&function, env)?
     });
+    if result.is_some() {
+        super::return_inference::check_contextual_returns(&function, env, function.result.as_ref().unwrap())?;
+    }
     Ok(function)
 }

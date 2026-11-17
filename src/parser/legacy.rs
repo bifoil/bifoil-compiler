@@ -1,10 +1,10 @@
 //! Explicit ChoiceScript interface declarations, separate from legacy source text.
 
-use super::{Cursor, Parser};
+use super::{Cursor, ParseError, Parser};
 use crate::model::LegacyTarget;
 use crate::syntax::{Expr, LegacyGlobalAst};
 
-fn literal(cursor: &mut Cursor) -> Result<String, String> {
+fn literal(cursor: &mut Cursor) -> Result<String, ParseError> {
     match cursor.expr(0, 0)? {
         Expr::String(value) => Ok(value),
         _ => Err("legacy targets require a non-interpolated String literal".into()),
@@ -16,7 +16,7 @@ impl Parser<'_> {
         &mut self,
         mut cursor: Cursor,
         exported: bool,
-    ) -> Result<LegacyGlobalAst, String> {
+    ) -> Result<LegacyGlobalAst, ParseError> {
         cursor.kw("legacy");
         let mutable = cursor.kw("var");
         if !mutable && !cursor.kw("val") {
@@ -41,7 +41,7 @@ impl Parser<'_> {
     }
 }
 
-pub(super) fn target(cursor: &mut Cursor) -> Result<LegacyTarget, String> {
+pub(super) fn target(cursor: &mut Cursor) -> Result<LegacyTarget, ParseError> {
     cursor.need("=")?;
     let scene = literal(cursor)?;
     let label = if cursor.kw("label") {

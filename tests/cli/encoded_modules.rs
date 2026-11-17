@@ -54,3 +54,83 @@ fn pretty_source_free_modules_preserve_identity_and_bad_bodies_preserve_output()
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("unknown variant"));
     assert_eq!(fs::read(project.0.join("startup.txt")).unwrap(), expected);
 }
+
+#[test]
+fn individually_valid_artifacts_cannot_share_a_fingerprint_with_conflicting_membership() {
+    use sha2::{Digest, Sha256};
+
+    fn hash(text: &str) -> String {
+        Sha256::digest(text.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    let project = Project::new();
+    project.write("bifoil.toml", "entry = \"alpha.start\"\n");
+    project.write(
+        "src/alpha.bfl",
+        r#"import beta.value as peerValue
+export fun value() -> Int = 1
+scene start():
+    prose:
+        ${peerValue()}
+"#,
+    );
+    project.write(
+        "src/beta.bfl",
+        r#"import alpha.value as peerValue
+export fun value() -> Int = 2
+"#,
+    );
+    for name in ["alpha", "beta"] {
+        let source = format!("src/{name}.bfl");
+        let output = format!("modules/{name}.bfm.json");
+        let compiled = project.run(&[
+            "module",
+            &source,
+            "--name",
+            name,
+            "--out",
+            &output,
+            "--module-path",
+            "modules",
+        ]);
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+    }
+    for name in ["alpha", "beta"] {
+        fs::remove_file(project.0.join(format!("src/{name}.bfl"))).unwrap();
+    }
+    let arguments = ["build", ".", "--out", "startup.txt", "--clean"];
+    let first = project.run(&arguments);
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let expected = fs::read(project.0.join("startup.txt")).unwrap();
+    let artifact = project.0.join("modules/beta.bfm.json");
+    let original = fs::read_to_string(&artifact).unwrap();
+    let module: serde_json::Value = serde_json::from_str(&original).unwrap();
+    let own_digest = module["digest"].as_str().unwrap();
+    let digest_field = format!("\"digest\":\"{own_digest}\"");
+    assert_eq!(original.matches(&digest_field).count(), 1);
+    let empty_digest = "\"digest\":\"\"";
+    let canonical = original.replacen(&digest_field, empty_digest, 1);
+    // This fixture contains only compact native-produced ASCII/Int JSON. Check
+    // its original canonical hash before making the controlled metadata change.
+    assert_eq!(hash(&canonical), own_digest);
+    let members = r#""members":["alpha","beta"]"#;
+    assert_eq!(canonical.matches(members).count(), 1);
+    let changed = canonical.replacen(members, r#""members":["alpha","beta","gamma"]"#, 1);
+    let changed = changed.replacen(empty_digest, &format!("\"digest\":\"{}\"", hash(&changed)), 1);
+    fs::write(&artifact, changed).unwrap();
+    let rejected = project.run(&arguments);
+    assert!(!rejected.status.success());
+    let diagnostic = String::from_utf8_lossy(&rejected.stderr);
+    assert!(diagnostic.contains("cyclic module group has changed"), "{diagnostic}");
+    assert_eq!(fs::read(project.0.join("startup.txt")).unwrap(), expected);
+    fs::write(&artifact, original).unwrap();
+    assert!(project.run(&arguments).status.success());
+    assert_eq!(fs::read(project.0.join("startup.txt")).unwrap(), expected);
+}

@@ -5,10 +5,13 @@
 //! breakers apply only to candidates with identical conversion ranks.
 
 pub(super) mod arguments;
+mod callbacks;
+mod constrained;
 mod ranking;
+mod reference_inference;
 mod specialization;
 pub(super) use ranking::{OverloadRank, best_match};
-use specialization::specialize;
+use specialization::{ResultInference, specialize};
 
 use super::{ScopeStack, infer, infer_as, lookup, static_symbol};
 use crate::model::{Signature, Type};
@@ -34,7 +37,7 @@ pub(super) fn callable_candidates(expression: &Expr, env: &ScopeStack) -> Vec<Si
     }
     match expression {
         Expr::Name(name) | Expr::Reference(name) => lookup(env, name).map(|s| s.callables).unwrap_or_default(),
-        Expr::Member { receiver, name, .. } | Expr::BoundReference(receiver, name) => {
+        Expr::Member { receiver, name, .. } | Expr::BoundReference(receiver, name, ..) => {
             let Ok(receiver) = infer(receiver, env) else {
                 return vec![];
             };
@@ -77,10 +80,80 @@ fn applicable(
     let positions = argument_positions(declaration, arguments)?;
     let mut scope = env.clone();
     super::return_inference::normal_completion(expression, &mut scope)?;
-    let callable = specialize(declaration, expression, Some(arguments), &positions, expected, &scope)?;
+    let check_arguments = |callable: CallableSpecialization| {
+        argument_ranks(&callable.signature, arguments, &positions, &scope).map(|ranks| (callable, ranks))
+    };
+    let ordinary = specialize(
+        declaration,
+        expression,
+        Some(arguments),
+        &positions,
+        expected,
+        &scope,
+        ResultInference::Join,
+    )
+    .and_then(check_arguments);
+    let (callable, ranks) = match ordinary {
+        Ok(selected) => selected,
+        Err(error) => {
+            if declaration.generics.is_empty() || matches!(ungroup(expression), Expr::TypeApply { .. }) {
+                return Err(error);
+            }
+            // Preserve the existing supplied-first retry before adding stronger
+            // directional constraints. Neither pass may replace explicit types.
+            let supplied = expected.and_then(|expected| {
+                specialize(
+                    declaration,
+                    expression,
+                    Some(arguments),
+                    &positions,
+                    Some(expected),
+                    &scope,
+                    ResultInference::Missing,
+                )
+                .ok()
+                .filter(|inferred| expected.accepts(&inferred.signature.result))
+                .and_then(|inferred| check_arguments(inferred).ok())
+            });
+            if let Some(selected) = supplied {
+                selected
+            } else {
+                match constrained::specialize(declaration, arguments, &positions, expected, &scope) {
+                    Ok(selected) => selected,
+                    Err(failure)
+                        if failure.contains("type graph budget") || failure.contains("ambiguous generic inference") =>
+                    {
+                        return Err(failure);
+                    }
+                    Err(_) => return Err(error),
+                }
+            }
+        }
+    };
+    let omitted_defaults = arguments::omitted_defaults(declaration, &positions).len();
+    Ok(Candidate {
+        callable,
+        rank: OverloadRank {
+            conversions: ranks,
+            omitted_defaults,
+            variadic: declaration.params.last().is_some_and(|p| p.vararg),
+            generic: !declaration.generics.is_empty(),
+        },
+    })
+}
+
+/// Check one specialization under normal argument flow without emitting code.
+/// All inference attempts use the same conversions and overload-quality rules.
+fn argument_ranks(
+    signature: &Signature,
+    arguments: &[(Option<String>, Expr)],
+    positions: &[usize],
+    env: &ScopeStack,
+) -> Result<Vec<u8>, String> {
+    let mut scope = env.clone();
     let mut ranks = vec![];
-    for ((name, value), index) in arguments.iter().zip(&positions) {
-        let parameter = &callable.signature.params[*index];
+    for ((name, value), index) in arguments.iter().zip(positions) {
+        let parameter = &signature.params[*index];
         let grouped = parameter.vararg && (name.is_some() || matches!(value, Expr::Spread(_)));
         let target = if grouped {
             Type::named("List", vec![parameter.ty.clone()])
@@ -100,28 +173,37 @@ fn applicable(
         let actual = inferred.as_ref().unwrap_or(&contextual);
         let rank = target
             .conversion_from(actual)
-            // A narrowed binding also retains its original declared identity.
-            // Contextual typing can expose that identity without adapting a value.
+            // A narrowed binding retains its original declared identity.
             .or_else(|| target.conversion_from(&contextual))
             .or_else(|| {
-                // A lambda is constructed under its expected signature. In a Unit
-                // context its final expression is deliberately discarded.
+                // A lambda may discard its final value in a Unit context.
                 matches!(ungroup(value), Expr::Lambda(_)).then_some(0)
             })
             .ok_or("argument types do not match")?;
         ranks.push(rank);
         super::return_inference::normal_completion(value, &mut scope)?;
     }
-    let omitted_defaults = arguments::omitted_defaults(declaration, &positions).len();
-    Ok(Candidate {
-        callable,
-        rank: OverloadRank {
-            conversions: ranks,
-            omitted_defaults,
-            variadic: declaration.params.last().is_some_and(|p| p.vararg),
-            generic: !declaration.generics.is_empty(),
-        },
-    })
+    Ok(ranks)
+}
+
+pub(super) fn visible_candidates(expression: &Expr, env: &ScopeStack) -> Result<Vec<Signature>, String> {
+    let mut declarations = callable_candidates(expression, env);
+    if declarations.is_empty() {
+        return Ok(declarations);
+    }
+    if let Expr::Member { receiver, .. } | Expr::BoundReference(receiver, ..) = callable_base(expression)
+        && static_symbol(callable_base(expression), env).is_none()
+    {
+        let receiver = infer(receiver, env)?;
+        let current_receiver = super::bindings::current_receiver(env);
+        declarations.retain(|signature| {
+            crate::declarations::check_method_access(receiver.present(), &signature.id, current_receiver).is_ok()
+        });
+        if declarations.is_empty() {
+            return Err("method is private".into());
+        }
+    }
+    Ok(declarations)
 }
 
 pub(super) fn specialize_signature(
@@ -136,21 +218,9 @@ pub(super) fn specialize_signature(
     if arguments.is_some() && matches!(callable_base(expression), Expr::Reference(_) | Expr::BoundReference(..)) {
         return Ok(None);
     }
-    let mut declarations = callable_candidates(expression, env);
+    let declarations = visible_candidates(expression, env)?;
     if declarations.is_empty() {
         return Ok(None);
-    }
-    if let Expr::Member { receiver, .. } | Expr::BoundReference(receiver, _) = callable_base(expression)
-        && static_symbol(callable_base(expression), env).is_none()
-    {
-        let receiver = infer(receiver, env)?;
-        let current_receiver = super::bindings::current_receiver(env);
-        declarations.retain(|signature| {
-            crate::declarations::check_method_access(receiver.present(), &signature.id, current_receiver).is_ok()
-        });
-        if declarations.is_empty() {
-            return Err("method is private".into());
-        }
     }
     if let Some(arguments) = arguments {
         let mut candidates = vec![];
@@ -176,7 +246,7 @@ pub(super) fn specialize_signature(
     let mut matches = vec![];
     let mut failure = None;
     for declaration in &declarations {
-        match specialize(declaration, expression, None, &[], expected, env) {
+        match specialize(declaration, expression, None, &[], expected, env, ResultInference::Join) {
             Ok(callable) if expected.is_none_or(|ty| callable.signature.ty().subtype_of(ty.present())) => {
                 matches.push(callable)
             }

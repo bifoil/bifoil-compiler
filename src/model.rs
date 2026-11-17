@@ -3,10 +3,16 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-// Version 3 requires ordered operand checking. Older typed bodies must be
-// regenerated; integrity hashes cannot establish the producer's static checks.
-pub const FORMAT: &str = "bifoil.module.v3";
-pub const PROFILE: &str = "bifoil-vm.v2";
+// Version 6 preserves supplied generic arguments when their result already
+// satisfies the expected type by genuine subtyping, including covariance.
+// Earlier bodies can retain a different reified type and must be regenerated.
+// Version 5 additionally requires ordinary value prefixes to take priority
+// over type-alias static members. Older bodies may contain a different constant
+// even when their public signature matches; an importer cannot repair that.
+// Version 4's checked integer membership/progression obligations still apply.
+// Integrity hashes do not establish a producer's static/lowering obligations.
+pub const FORMAT: &str = "bifoil.module.v6";
+pub const PROFILE: &str = "bifoil-vm.v3";
 pub const MAX_SOURCE: usize = 1024 * 1024;
 pub const MAX_ARTIFACT: u64 = 16 * 1024 * 1024;
 // Declaration interfaces remain independently bounded per source/module.
@@ -263,6 +269,13 @@ pub enum Op {
     Binary {
         operator: String,
     },
+    /// Exact equality uses source comparison views without changing values'
+    /// retained construction identities used by later type tests and casts.
+    ExactCompare {
+        left_type: Type,
+        right_type: Type,
+        negate: bool,
+    },
     Jump {
         target: usize,
     },
@@ -413,7 +426,7 @@ pub struct Module<F = BTreeMap<String, Function>> {
     #[serde(skip)]
     pub summaries: BTreeMap<String, Arc<FunctionSummary>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<ModuleGroup>,
+    pub group: Option<Arc<ModuleGroup>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub legacy_globals: BTreeMap<String, LegacyGlobal>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

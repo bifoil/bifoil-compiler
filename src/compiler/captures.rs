@@ -15,7 +15,8 @@ pub(super) use empty::EmptyDependencies;
 pub(super) use publication::{Publications, mark_published};
 mod requirements;
 pub(super) use names::{
-    assigned_names, callable_captures, captured_names, expression_names, named_captures, statement_names,
+    assigned_names, callable_captures, captured_names, expression_names, lambda_captures, named_captures,
+    statement_names,
 };
 pub(super) use requirements::{Requirement, Requirements};
 
@@ -27,6 +28,11 @@ pub(super) fn capture_binding<'a>(env: &'a ScopeStack, name: &str) -> Option<(us
 
 fn capture_slot<'a>(env: &'a [super::bindings::Scope], name: &str) -> Option<(usize, &'a str, &'a Binding)> {
     let mut path = name;
+    if let Some((prefix, _)) = name.split_once('.')
+        && env.iter().rev().any(|scope| scope.contains_key(prefix))
+    {
+        path = prefix;
+    }
     loop {
         if let Some(found) = env.iter().enumerate().rev().find_map(|(index, scope)| {
             scope

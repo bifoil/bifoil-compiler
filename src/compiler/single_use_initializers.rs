@@ -186,6 +186,7 @@ pub(super) fn discover(
                 && simple
                 && function.params.is_empty()
                 && function.generics.is_empty()
+                && !function.prose_body
                 && !function.suspend;
             candidates.push(Candidate {
                 declaration: index,
@@ -288,7 +289,7 @@ fn compact_call(statement: &Statement) -> Option<(&str, &Arguments)> {
     let StatementKind::Expression(value) = &statement.kind else {
         return None;
     };
-    let Expr::Call(callee, arguments) = super::overloads::ungroup(value) else {
+    let Expr::Call(callee, arguments, ..) = super::overloads::ungroup(value) else {
         return None;
     };
     Some((plain_call_name(callee, arguments)?, arguments))

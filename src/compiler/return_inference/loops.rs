@@ -17,7 +17,7 @@ pub(super) struct Loop {
     continues: Vec<ScopeStack>,
 }
 
-impl Inference {
+impl Inference<'_> {
     fn begin_loop(&mut self, label: &Option<String>, entry: &ScopeStack, keep: usize) -> Result<(), String> {
         if label.is_some() && self.loops.iter().any(|state| state.label == *label) {
             return Err("duplicate enclosing loop label".into());

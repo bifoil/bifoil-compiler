@@ -3,9 +3,12 @@
 //! All names exist during inference. A separate dependency pass orders these
 //! functions before runtime execution; a dependent initializer never starts early.
 
+mod hoisting;
+pub(super) use hoisting::hoist;
+
 use super::{Binding, Compiler, FunctionContext, ScopeStack, infer, insert, lookup, pending_type, symbol_mut};
 use crate::model::{Export, Function, Op, SharedDef, SignatureData, Type, unit};
-use crate::syntax::{Ast, FunctionAst, Statement, StatementKind};
+use crate::syntax::{Ast, Expr, FunctionAst, Statement, StatementKind};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -77,6 +80,7 @@ impl Compiler {
             source_file: self.file.clone(),
             function_id: bootstrap.clone(),
             return_type: Type::Unit,
+            discard_return_values: false,
             may_suspend: false,
             loop_stack: vec![],
             next_iterator_id: 0,
@@ -100,6 +104,7 @@ impl Compiler {
             }
             let initializer = format!("{module}.$shared:{name}");
             let function = FunctionAst {
+                prose_body: false,
                 legacy: None,
                 generics: vec![],
                 name: format!("$shared:{name}"),
@@ -161,4 +166,18 @@ impl Compiler {
         );
         Ok((definitions, Some(bootstrap)))
     }
+}
+
+/// A source-local name is an analysis alias of the same persistent runtime
+/// cell. No initializer, declaration, conversion, or value copy runs here.
+pub(super) fn bind_local(name: &str, value: &Expr, env: &mut ScopeStack) -> Result<(), String> {
+    let Expr::Name(private) = value else {
+        return Err("nested shared declaration was not prepared".into());
+    };
+    let mut binding = lookup(env, private).ok_or("missing nested shared storage")?;
+    // Root import groups address one frame; this alias lives in a lexical frame.
+    binding.global_aliases = None;
+    binding.narrow = None;
+    binding.field_narrows = None;
+    insert(env, name, binding)
 }

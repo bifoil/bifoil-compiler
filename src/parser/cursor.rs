@@ -1,6 +1,8 @@
 //! Token navigation, identifiers, generic parameters, and declaration constraints.
 
-use crate::lexer::{Token, name, symbol};
+use super::ParseError;
+
+use crate::lexer::{Token, TokenPosition, name, symbol};
 use crate::syntax::Expr;
 use std::collections::BTreeSet;
 
@@ -9,9 +11,10 @@ pub(super) struct Cursor {
     pub(super) embedded: Vec<Expr>,
     pub(super) indent_level: usize,
     pub(super) source_line: usize,
-    pub(super) token_lines: Vec<usize>,
+    pub(super) token_positions: Vec<TokenPosition>,
     pub(super) tokens: Vec<Token>,
     pub(super) position: usize,
+    pub(super) expression_depth: usize,
 }
 
 impl Cursor {
@@ -19,27 +22,31 @@ impl Cursor {
         Self {
             tokens,
             position: 0,
+            expression_depth: 0,
             embedded: vec![],
             indent_level: 0,
             source_line: 0,
-            token_lines: vec![],
+            token_positions: vec![],
         }
     }
 
-    pub(super) fn located(text: &str, source_line: usize) -> Result<Self, String> {
-        let (tokens, lines) = crate::lexer::lex_lines(text)?;
-        let mut cursor = Self::new(tokens);
-        cursor.source_line = source_line;
-        cursor.token_lines = lines.into_iter().map(|offset| source_line + offset).collect();
-        Ok(cursor)
+    pub(super) fn line(&self) -> usize {
+        self.token_positions
+            .get(self.position)
+            .or_else(|| self.token_positions.last())
+            .map(|position| position.line)
+            .unwrap_or(self.source_line)
     }
 
-    pub(super) fn line(&self) -> usize {
-        self.token_lines
+    pub(super) fn indent(&self) -> usize {
+        self.token_positions
             .get(self.position)
-            .or_else(|| self.token_lines.last())
-            .copied()
-            .unwrap_or(self.source_line)
+            .map(|position| position.indent)
+            .unwrap_or(self.indent_level)
+    }
+
+    pub(super) fn error(&self, message: impl Into<ParseError>) -> ParseError {
+        message.into().at(self.line())
     }
 
     pub(super) fn kw(&mut self, value: &str) -> bool {
@@ -60,15 +67,25 @@ impl Cursor {
         }
     }
 
-    pub(super) fn need(&mut self, value: &str) -> Result<(), String> {
+    pub(super) fn need(&mut self, value: &str) -> Result<(), ParseError> {
         if self.sym(value) {
             Ok(())
         } else {
-            Err(format!("expected '{value}'"))
+            Err(self.error(format!("expected '{value}'")))
         }
     }
 
-    pub(super) fn ident(&mut self) -> Result<String, String> {
+    /// Built-in progression.step shares a spelling with an infix keyword.
+    /// Other declaration keywords remain invalid member names.
+    pub(super) fn member_name(&mut self) -> Result<String, ParseError> {
+        if self.kw("step") {
+            Ok("step".into())
+        } else {
+            self.ident()
+        }
+    }
+
+    pub(super) fn ident(&mut self) -> Result<String, ParseError> {
         match self.tokens.get(self.position).cloned() {
             Some(Token::Name(s)) => {
                 if [
@@ -117,27 +134,27 @@ impl Cursor {
                 ]
                 .contains(&s.as_str())
                 {
-                    return Err(format!("reserved keyword '{s}' cannot be an identifier"));
+                    return Err(self.error(format!("reserved keyword '{s}' cannot be an identifier")));
                 }
                 self.position += 1;
                 Ok(s)
             }
-            _ => Err("expected an identifier".into()),
+            _ => Err(self.error("expected an identifier")),
         }
     }
 
-    pub(super) fn end(&self) -> Result<(), String> {
+    pub(super) fn end(&self) -> Result<(), ParseError> {
         if self.position == self.tokens.len() {
             Ok(())
         } else {
-            Err(format!(
+            Err(self.error(format!(
                 "unsupported or unexpected trailing token {}",
                 self.tokens[self.position]
-            ))
+            )))
         }
     }
 
-    pub(super) fn generics(&mut self) -> Result<Vec<crate::model::GenericParam>, String> {
+    pub(super) fn generics(&mut self) -> Result<Vec<crate::model::GenericParam>, ParseError> {
         let mut result = vec![];
         let mut names = BTreeSet::new();
         if !self.sym("<") {
@@ -165,7 +182,7 @@ impl Cursor {
         Ok(result)
     }
 
-    pub(super) fn constraints(&mut self, parameters: &mut [crate::model::GenericParam]) -> Result<(), String> {
+    pub(super) fn constraints(&mut self, parameters: &mut [crate::model::GenericParam]) -> Result<(), ParseError> {
         if !self.kw("where") {
             return Ok(());
         }

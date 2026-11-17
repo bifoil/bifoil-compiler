@@ -24,7 +24,14 @@ def measure(command):
     ):
         started = time.perf_counter()
         process = subprocess.run(
-            [observer, "--quiet", "--format=%M", "--output=" + metrics.name, "--", *command],
+            [
+                observer,
+                "--quiet",
+                "--format=%M",
+                "--output=" + metrics.name,
+                "--",
+                *command,
+            ],
             stdout=output,
             stderr=errors,
         )
@@ -36,7 +43,9 @@ def measure(command):
             if peak_kib < 0:
                 raise ValueError("negative peak RSS")
         except (IndexError, ValueError) as error:
-            raise RuntimeError("native observer did not report compiler peak RSS") from error
+            raise RuntimeError(
+                "native observer did not report compiler peak RSS"
+            ) from error
         output.seek(0)
         errors.seek(0)
         return {

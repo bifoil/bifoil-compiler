@@ -6,9 +6,12 @@
 
 mod counting_writer;
 mod encoded;
+mod runtime_header;
+pub(crate) use runtime_header::RuntimeHeader;
 mod encoded_cache;
 mod function_map;
 mod legacy_scan;
+mod module_view;
 pub(crate) use function_map::StoredFunctions;
 mod record_index;
 use record_index::RecordIndex;
@@ -22,7 +25,9 @@ use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom};
+#[cfg(test)]
+use std::io::BufReader;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,7 +91,6 @@ impl CodeStore {
     pub(crate) fn record(&mut self, module: &mut Module, started: Instant) -> Result<(), String> {
         self.record_module(module, started, true)
     }
-    #[cfg(test)]
     pub(crate) fn record_pending(&mut self, module: &mut Module, started: Instant) -> Result<(), String> {
         self.record_module(module, started, false)
     }
@@ -212,8 +216,8 @@ impl CodeStore {
         }
         Ok(())
     }
-    /// Restore only the component currently undergoing dependency validation.
-    /// Pending ancestors remain on disk, and an invalid cache can be discarded.
+    /// Test-only reconstruction for canonical compatibility and fault controls.
+    #[cfg(test)]
     pub(crate) fn restore_pending(&mut self, module: &mut Module, started: Instant) -> Result<(), String> {
         for (id, header) in &mut module.functions {
             crate::budget(started)?;
@@ -227,6 +231,7 @@ impl CodeStore {
         self.reclaim_empty()?;
         crate::budget(started)
     }
+    #[cfg(test)]
     fn read_checked(&self, id: &str, header: &Function) -> Result<Function, String> {
         let function = self.read(id)?;
         if function.signature != header.signature
@@ -243,6 +248,7 @@ impl CodeStore {
         }
         Ok(function)
     }
+    #[cfg(test)]
     fn read(&self, id: &str) -> Result<Function, String> {
         let location = self
             .entries
@@ -360,6 +366,19 @@ impl CodeStore {
             .encoded(id)?
             .header()
             .map_err(|error| format!("stored function {id}: {error}"))?;
+        if header.signature.id != id {
+            return Err(format!("stored function header changed: {id}"));
+        }
+        Ok(header)
+    }
+
+    pub(crate) fn runtime_header<'a>(
+        &self,
+        id: &str,
+        expected: &crate::function_catalog::HeaderDigest,
+        module: &'a str,
+    ) -> Result<RuntimeHeader<'a>, String> {
+        let header = self.encoded_expected(id, &expected.0)?.runtime_header(module)?;
         if header.signature.id != id {
             return Err(format!("stored function header changed: {id}"));
         }

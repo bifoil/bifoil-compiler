@@ -31,20 +31,23 @@ pub enum Expr {
         receiver: Box<Expr>,
         name: String,
         safe: bool,
+        line: usize,
     },
     Index {
         receiver: Box<Expr>,
         index: Box<Expr>,
         safe: bool,
+        line: usize,
     },
-    Unwrap(Box<Expr>),
+    Unwrap(Box<Expr>, usize),
     Spread(Box<Expr>),
-    SafeCall(Box<Expr>, Vec<(Option<String>, Expr)>),
-    BoundReference(Box<Expr>, String),
+    SafeCall(Box<Expr>, Vec<(Option<String>, Expr)>, usize),
+    BoundReference(Box<Expr>, String, usize),
     TypeOp {
         value: Box<Expr>,
         operator: String,
         ty: Type,
+        line: usize,
     },
     Transfer {
         kind: String,
@@ -55,10 +58,30 @@ pub enum Expr {
     Name(String),
     Reference(String),
     Group(Box<Expr>),
-    Unary(String, Box<Expr>),
-    Binary(String, Box<Expr>, Box<Expr>),
-    Call(Box<Expr>, Vec<(Option<String>, Expr)>),
+    Unary(String, Box<Expr>, usize),
+    Binary(String, Box<Expr>, Box<Expr>, usize),
+    Call(Box<Expr>, Vec<(Option<String>, Expr)>, usize),
 }
+impl Expr {
+    /// Parsed checked operations retain the operator token's physical line.
+    /// Generated expressions use zero and inherit their enclosing source site.
+    pub(crate) fn operation_line(&self, fallback: usize) -> usize {
+        let line = match self {
+            Self::Unary(_, _, line)
+            | Self::Binary(_, _, _, line)
+            | Self::Call(_, _, line)
+            | Self::SafeCall(_, _, line)
+            | Self::BoundReference(_, _, line)
+            | Self::Unwrap(_, line)
+            | Self::Member { line, .. }
+            | Self::Index { line, .. }
+            | Self::TypeOp { line, .. } => *line,
+            _ => 0,
+        };
+        if line == 0 { fallback } else { line }
+    }
+}
+
 /// An interpolation retains its physical origin even after paragraph folding.
 #[derive(Debug, Clone)]
 pub struct TemplatePart {
@@ -76,6 +99,9 @@ pub struct Parameter {
 }
 #[derive(Debug, Clone)]
 pub struct FunctionAst {
+    /// A block suite parsed in lexical prose mode owns a fresh prose context
+    /// when invoked, including after it escapes its defining narrative.
+    pub prose_body: bool,
     pub legacy: Option<LegacyTarget>,
     pub generics: Vec<GenericParam>,
     pub name: String,
@@ -168,6 +194,8 @@ pub enum StatementKind {
         post: bool,
     },
     Variable {
+        /// Nested shared declarations bind a preinitialized persistent cell.
+        shared: bool,
         name: String,
         ty: Option<Type>,
         mutable: bool,
@@ -180,6 +208,8 @@ pub enum StatementKind {
     },
     Expression(Expr),
     Return(Option<Expr>),
+    /// Generated fallthrough; unreachable synthetic returns need no value conversion.
+    ImplicitReturn,
     Function(FunctionAst),
     If {
         branches: Vec<ConditionalBranch>,

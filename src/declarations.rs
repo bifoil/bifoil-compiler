@@ -15,12 +15,12 @@ pub(crate) use variance::{argument_variance, validate_variance};
 pub(crate) use well_formed::validate_type;
 
 pub(crate) use catalog::{
-    all_types, check_method_access, definition, field, field_can_change, install, method, methods, owned_types, parent,
-    receiver, same_nominal_declaration, update_method,
+    all_types, check_method_access, definition, field, field_can_change, field_for_write, install, method, methods,
+    owned_types, parent, receiver, same_nominal_declaration, update_method,
 };
 use generated::{ConstructorDefaults, ConstructorSpec, generate_constructor};
 use normalization::{normalize_block, normalize_expression, normalize_function};
-pub(crate) use preparation::prepare;
+pub(crate) use preparation::{prepare, prepare_interface};
 use resolution::install_imported_alias;
 use resolution::{register_type_aliases, resolve_generic_parameters, resolve_type};
 

@@ -26,7 +26,9 @@ arguments = argparse.ArgumentParser(description=__doc__)
 arguments.add_argument("compiler", type=Path)
 arguments.add_argument("output_directory", type=Path)
 arguments.add_argument(
-    "--keep-original", action="store_true", help="retain the populated program for execution checks"
+    "--keep-original",
+    action="store_true",
+    help="retain the populated program for execution checks",
 )
 arguments.add_argument(
     "--workload",
@@ -106,28 +108,116 @@ original = program_source(options.workload)
 nominal = options.workload == "nominals"
 edit_name, before, after = {
     "forward-vals": ("forward_val_edit", "x1023 = count + 1", "x1023 = count + 2"),
-    "grouped-forward-vals": ("grouped_forward_val_edit", "x1023 = count + 1", "x1023 = count + 2"),
-    "unit-forward-vals": ("unit_forward_val_edit", "x1023 = count + 1", "x1023 = count + 2"),
-    "frame-forward-vals": ("frame_forward_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "mutable-forward-vals": ("mutable_forward_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "repeated-forward-vals": ("repeated_forward_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "loop-forward-vals": ("loop_forward_val_edit", "initialize1023(iteration1023)", "initialize1023(iteration1023, increment = 2)"),
-    "range-forward-vals": ("range_forward_val_edit", "initialize1023(iteration1023)", "initialize1023(iteration1023, increment = 2)"),
-    "stored-range-vals": ("stored_range_val_edit", "initialize1023(iteration1023)", "initialize1023(iteration1023, increment = 2)"),
-    "immutable-list-vals": ("immutable_list_val_edit", "initialize1023(iteration1023)", "initialize1023(iteration1023, increment = 2)"),
-    "exclusive-forward-vals": ("exclusive_forward_val_edit", "initialize1023(count, increment = 1)", "initialize1023(count, increment = 2)"),
-    "loop-exit-vals": ("loop_exit_val_edit", "initialize1023(iteration1023)", "initialize1023(iteration1023, increment = 2)"),
-    "prose-vals": ("prose_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "operand-vals": ("operand_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "compound-vals": ("compound_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "indexed-vals": ("indexed_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "assignment-vals": ("assignment_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "default-vals": ("default_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "expression-vals": ("expression_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "returning-vals": ("returning_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "generic-vals": ("generic_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "structured-vals": ("structured_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
-    "parameter-vals": ("parameter_val_edit", "initialize1023(count)", "initialize1023(count, increment = 2)"),
+    "grouped-forward-vals": (
+        "grouped_forward_val_edit",
+        "x1023 = count + 1",
+        "x1023 = count + 2",
+    ),
+    "unit-forward-vals": (
+        "unit_forward_val_edit",
+        "x1023 = count + 1",
+        "x1023 = count + 2",
+    ),
+    "frame-forward-vals": (
+        "frame_forward_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "mutable-forward-vals": (
+        "mutable_forward_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "repeated-forward-vals": (
+        "repeated_forward_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "loop-forward-vals": (
+        "loop_forward_val_edit",
+        "initialize1023(iteration1023)",
+        "initialize1023(iteration1023, increment = 2)",
+    ),
+    "range-forward-vals": (
+        "range_forward_val_edit",
+        "initialize1023(iteration1023)",
+        "initialize1023(iteration1023, increment = 2)",
+    ),
+    "stored-range-vals": (
+        "stored_range_val_edit",
+        "initialize1023(iteration1023)",
+        "initialize1023(iteration1023, increment = 2)",
+    ),
+    "immutable-list-vals": (
+        "immutable_list_val_edit",
+        "initialize1023(iteration1023)",
+        "initialize1023(iteration1023, increment = 2)",
+    ),
+    "exclusive-forward-vals": (
+        "exclusive_forward_val_edit",
+        "initialize1023(count, increment = 1)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "loop-exit-vals": (
+        "loop_exit_val_edit",
+        "initialize1023(iteration1023)",
+        "initialize1023(iteration1023, increment = 2)",
+    ),
+    "prose-vals": (
+        "prose_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "operand-vals": (
+        "operand_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "compound-vals": (
+        "compound_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "indexed-vals": (
+        "indexed_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "assignment-vals": (
+        "assignment_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "default-vals": (
+        "default_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "expression-vals": (
+        "expression_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "returning-vals": (
+        "returning_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "generic-vals": (
+        "generic_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "structured-vals": (
+        "structured_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
+    "parameter-vals": (
+        "parameter_val_edit",
+        "initialize1023(count)",
+        "initialize1023(count, increment = 2)",
+    ),
     "scoped-vals": ("scoped_val_edit", "x1023 = count + 1", "x1023 = count + 2"),
     "single-use-vals": (
         "single_use_val_edit",
@@ -140,9 +230,21 @@ edit_name, before, after = {
         "val result1023 = hidden.map(::record) + 1",
     ),
     "generic-parameters": ("last_generic_argument_edit", "Last = Int", "Last = Float"),
-    "function-parameters": ("last_named_argument_edit", "p00000 = mark(0)", "p00000 = mark(1)"),
-    "inferred-function-tables": ("last_routine_edit", "f16382() = 16382", "f16382() = 16383"),
-    "function-tables": ("last_routine_edit", "f16382() -> Int = 16382", "f16382() -> Int = 16383"),
+    "function-parameters": (
+        "last_named_argument_edit",
+        "p00000 = mark(0)",
+        "p00000 = mark(1)",
+    ),
+    "inferred-function-tables": (
+        "last_routine_edit",
+        "f16382() = 16382",
+        "f16382() = 16383",
+    ),
+    "function-tables": (
+        "last_routine_edit",
+        "f16382() -> Int = 16382",
+        "f16382() -> Int = 16383",
+    ),
     "continue-branches": ("selector_edit", "selector = -1", "selector = 1023"),
     "continue-facts": ("selector_edit", "selector = -1", "selector = 127"),
     "loop-breaks": ("selector_edit", "selector = -1", "selector = 127"),
@@ -151,7 +253,11 @@ edit_name, before, after = {
     "conditional-chains": ("selector_edit", "selector = -1", "selector = 8191"),
     "forward-aliases": ("alias_terminal_edit", "A32767 = Int", "A32767 = Float"),
     "calling-defaults": ("default_helper_edit", "delta: Int = 1", "delta: Int = 2"),
-    "named-constructors": ("named_argument_edit", "field2047 = 2062", "field2047 = 2063"),
+    "named-constructors": (
+        "named_argument_edit",
+        "field2047 = 2062",
+        "field2047 = 2063",
+    ),
     "method-bodies": ("method_field_edit", "offset: Int = 0", "offset: Int = 1"),
     "nominals": ("field_edit", "field0000: Int = 0", "field0000: Int = 1"),
     "branches": ("branch_edit", "return 1", "return 3"),
@@ -173,9 +279,21 @@ edit_name, before, after = {
     "capture-initializers": ("captured_store_edit", "x1899 = 1", "x1899 = 2"),
     "capture-readers": ("captured_reader_edit", "x1899 = 1", "x1899 = 2"),
     "shared-writes": ("shared_store_edit", "x4089 += 1", "x4089 += 2"),
-    "shared-calls": ("shared_result_edit", "value1899: Int = f1899(false)", "value1899: Int = 2"),
-    "shared-dependencies": ("shared_dependency_edit", "value1499: Int = read()", "value1499: Int = read() + 1"),
-    "callback-initializers": ("callback_value_edit", "cb4089 = () => 4089", "cb4089 = () => 4090"),
+    "shared-calls": (
+        "shared_result_edit",
+        "value1899: Int = f1899(false)",
+        "value1899: Int = 2",
+    ),
+    "shared-dependencies": (
+        "shared_dependency_edit",
+        "value1499: Int = read()",
+        "value1499: Int = read() + 1",
+    ),
+    "callback-initializers": (
+        "callback_value_edit",
+        "cb4089 = () => 4089",
+        "cb4089 = () => 4090",
+    ),
 }[options.workload]
 assert before in original
 source.write_text(original)
@@ -328,10 +446,12 @@ for name in ["populate", "unchanged", edit_name]:
     result["program_sha256"] = checksums[name]
     if options.keep_original and name == "populate":
         shutil.copyfile(output, root / "original.startup.txt")
-report["unchanged_output"] = "populate" in checksums and checksums.get("populate") == checksums.get("unchanged")
-report["edited_output_changed"] = (
-    edit_name in checksums and checksums[edit_name] != checksums.get("populate")
-)
+report["unchanged_output"] = "populate" in checksums and checksums.get(
+    "populate"
+) == checksums.get("unchanged")
+report["edited_output_changed"] = edit_name in checksums and checksums[
+    edit_name
+] != checksums.get("populate")
 (root / "measurement.json").write_text(json.dumps(report, indent=2) + "\n")
 print(json.dumps(report, indent=2))
 for name, result in report["runs"].items():

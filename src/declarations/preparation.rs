@@ -11,9 +11,34 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(crate) fn prepare(
+    ast: Ast,
+    module: &str,
+    deps: &crate::model::ModuleView<'_>,
+) -> Result<(Ast, TypeDefinitions), String> {
+    prepare_with_bounds(ast, module, deps, BoundValidation::Complete)
+}
+
+/// Cyclic declaration rounds resolve names before validating their meaning.
+/// The subsequent interface and lowering passes require complete bounds.
+pub(crate) fn prepare_interface(
+    ast: Ast,
+    module: &str,
+    deps: &crate::model::ModuleView<'_>,
+) -> Result<(Ast, TypeDefinitions), String> {
+    prepare_with_bounds(ast, module, deps, BoundValidation::Provisional)
+}
+
+#[derive(Clone, Copy)]
+enum BoundValidation {
+    Provisional,
+    Complete,
+}
+
+fn prepare_with_bounds(
     mut ast: Ast,
     module: &str,
     deps: &crate::model::ModuleView<'_>,
+    bounds: BoundValidation,
 ) -> Result<(Ast, TypeDefinitions), String> {
     let mut names = Scope::new();
     names.insert("$module".into(), module.into());
@@ -35,7 +60,9 @@ pub(crate) fn prepare(
     for i in &ast.imports {
         if let Some(Export::Alias { parameters, ty }) = deps.get(&i.module).and_then(|m| m.exports.get(&i.symbol)) {
             let id = format!("$import:{}.{}", i.module, i.symbol);
-            names.insert(i.alias.clone(), id.clone());
+            if names.insert(i.alias.clone(), id.clone()).is_some() {
+                return Err(format!("duplicate imported type name '{}'", i.alias));
+            }
             install_imported_alias(
                 id,
                 AliasAst {
@@ -49,8 +76,10 @@ pub(crate) fn prepare(
         }
     }
     for i in &ast.imports {
-        if let Some(Export::Type { id, .. }) = deps.get(&i.module).and_then(|m| m.exports.get(&i.symbol)) {
-            names.insert(i.alias.clone(), id.clone());
+        if let Some(Export::Type { id, .. }) = deps.get(&i.module).and_then(|m| m.exports.get(&i.symbol))
+            && names.insert(i.alias.clone(), id.clone()).is_some()
+        {
+            return Err(format!("duplicate imported type name '{}'", i.alias));
         }
     }
     for d in &ast.types {
@@ -248,6 +277,8 @@ pub(crate) fn prepare(
         );
     }
     install(types.clone());
-    crate::generics::validate_installed_bounds()?;
+    if matches!(bounds, BoundValidation::Complete) {
+        crate::generics::validate_installed_bounds()?;
+    }
     Ok((ast, types))
 }

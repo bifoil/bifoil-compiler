@@ -11,6 +11,11 @@ use std::io::{BufReader, Read, Take};
 use std::path::Path;
 use std::time::Instant;
 
+// Bounded full-file JSON buffers accelerate the decoder for small records.
+// Larger modules continue streaming; this is an active-buffer limit, not an
+// artifact-admission limit or an aggregate in-memory input allowance.
+pub(crate) const BUFFERED_JSON_LIMIT: u64 = 1024 * 1024;
+
 struct Observed<R> {
     inner: R,
     hash: Sha256,

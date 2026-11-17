@@ -112,13 +112,14 @@ impl<'a> Inventory<'a> {
             StatementKind::Alias(_)
             | StatementKind::Uninitialized { .. }
             | StatementKind::ParagraphBreak
-            | StatementKind::Return(None) => {}
+            | StatementKind::Return(None)
+            | StatementKind::ImplicitReturn => {}
         }
     }
 
     fn expression(&mut self, expression: &'a Expr) {
         match expression {
-            Expr::Call(callee, arguments) => {
+            Expr::Call(callee, arguments, ..) => {
                 if let Expr::Name(name) = super::super::overloads::callable_base(callee) {
                     self.calls.push(Call {
                         name,
@@ -136,18 +137,18 @@ impl<'a> Inventory<'a> {
                 self.referenced.insert(name.clone());
             }
             Expr::Group(value)
-            | Expr::Unary(_, value)
-            | Expr::Unwrap(value)
+            | Expr::Unary(_, value, ..)
+            | Expr::Unwrap(value, ..)
             | Expr::Spread(value)
             | Expr::TypeOp { value, .. }
             | Expr::TypeApply { callee: value, .. }
-            | Expr::BoundReference(value, _)
+            | Expr::BoundReference(value, ..)
             | Expr::Member { receiver: value, .. } => self.expression(value),
-            Expr::Index { receiver, index, .. } | Expr::Binary(_, receiver, index) => {
+            Expr::Index { receiver, index, .. } | Expr::Binary(_, receiver, index, ..) => {
                 self.expression(receiver);
                 self.expression(index);
             }
-            Expr::SafeCall(callee, arguments) => {
+            Expr::SafeCall(callee, arguments, ..) => {
                 self.expression(callee);
                 for (_, argument) in arguments {
                     self.expression(argument);

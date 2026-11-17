@@ -72,6 +72,10 @@ pub(super) fn read_type<'a>(ty: &'a Type, receiver: &Type, definition: &'a TypeD
     ProjectionView::new(receiver, definition).view(ty, Direction::Read)
 }
 
+pub(super) fn input_type<'a>(ty: &'a Type, receiver: &Type, definition: &'a TypeDef) -> Type {
+    ProjectionView::new(receiver, definition).view(ty, Direction::Input)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Direction {
     Read,
@@ -223,19 +227,21 @@ impl<'a> ProjectionView<'a> {
     }
 }
 
-pub(super) fn method(signature: &Signature, receiver: &Type, definition: &TypeDef) -> Option<Signature> {
+pub(super) fn method(signature: &Signature, receiver: &Type, definition: &TypeDef) -> Signature {
     let hidden = hidden_parameters(receiver, definition);
-    if signature
-        .generics
-        .iter()
-        .flat_map(|parameter| &parameter.bounds)
-        .any(|bound| depends_on(bound, &hidden))
-    {
-        return None;
-    }
     let known = super::catalog::receiver_type_arguments(receiver, definition);
     let mut result = crate::generics::signature(signature, &known);
     let mut views = ProjectionView::new(receiver, definition);
+    for (index, parameter) in signature.generics.iter().enumerate() {
+        for (bound_index, bound) in parameter.bounds.iter().enumerate() {
+            if depends_on(bound, &hidden) {
+                // A caller-selected argument must satisfy this bound for every
+                // hidden receiver argument. Its lower view is sufficient; an
+                // upper read bound would admit unsound instantiations.
+                Arc::make_mut(&mut result).generics[index].bounds[bound_index] = views.view(bound, Direction::Input);
+            }
+        }
+    }
     for (index, parameter) in signature.params.iter().enumerate() {
         if depends_on(&parameter.ty, &hidden) {
             Arc::make_mut(&mut result).params_mut()[index].ty = views.view(&parameter.ty, Direction::Input);
@@ -244,5 +250,5 @@ pub(super) fn method(signature: &Signature, receiver: &Type, definition: &TypeDe
     if depends_on(&signature.result, &hidden) {
         Arc::make_mut(&mut result).result = views.view(&signature.result, Direction::Read);
     }
-    Some(result)
+    result
 }

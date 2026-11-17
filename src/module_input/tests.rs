@@ -219,3 +219,57 @@ fn pure_spooled_bodies_share_empty_structural_facts() {
     assert!(std::sync::Arc::ptr_eq(&first, &second));
     check(loaded).unwrap();
 }
+
+#[test]
+fn module_versions_and_profiles_are_checked_before_artifact_publication() {
+    let original = module();
+    for format in [
+        "bifoil.module.v1",
+        "bifoil.module.v2",
+        "bifoil.module.v3",
+        "bifoil.module.v4",
+        "bifoil.module.v5",
+        crate::model::FORMAT,
+        "bifoil.module.v7",
+    ] {
+        for profile in ["bifoil-vm.v1", "bifoil-vm.v2", crate::model::PROFILE, "bifoil-vm.v4"] {
+            let mut candidate = original.clone();
+            candidate.format = format.into();
+            candidate.profile = profile.into();
+            resign(&mut candidate);
+            let spooled = spooled(&candidate);
+            let accepted = format == crate::model::FORMAT && profile == crate::model::PROFILE;
+            let ordinary = crate::verify(&mut candidate);
+            let streamed = check(spooled).map(|_| ());
+            if accepted {
+                ordinary.unwrap();
+                streamed.unwrap();
+            } else {
+                assert!(ordinary.unwrap_err().contains("unsupported module"));
+                assert!(streamed.unwrap_err().contains("unsupported module"));
+            }
+        }
+    }
+}
+
+#[test]
+fn current_modules_cannot_claim_exact_comparisons_without_their_required_views() {
+    let mut original = module();
+    let function = original.functions.values_mut().next().unwrap();
+    let span = function.code[0].span.clone();
+    function.code.insert(
+        0,
+        crate::model::Instruction {
+            op: crate::model::Op::Binary { operator: "===".into() },
+            span,
+        },
+    );
+    resign(&mut original);
+    let decoded = spooled(&original);
+    let ordinary = crate::verify(&mut original).unwrap_err();
+    let streamed = check(decoded)
+        .err()
+        .expect("invalid exact instruction must be rejected");
+    assert!(ordinary.contains("declared comparison views"), "{ordinary}");
+    assert!(streamed.contains("declared comparison views"), "{streamed}");
+}

@@ -3,7 +3,9 @@
 from pathlib import Path
 
 
-def code_modules(module_count=5, routines_per_module=3000, additions=13, *, suspending=False):
+def code_modules(
+    module_count=5, routines_per_module=3000, additions=13, *, suspending=False
+):
     """Use explicit runtime arithmetic so source size represents executable code."""
     if min(module_count, routines_per_module, additions) <= 0:
         raise ValueError("module, routine, and arithmetic counts must be positive")
@@ -17,7 +19,9 @@ def code_modules(module_count=5, routines_per_module=3000, additions=13, *, susp
             index = module * routines_per_module + local
             name = f"f{index:05d}"
             expression = f"value + {index}" + " + 0" * (additions - 1)
-            declarations.append(f"export {effect}fun {name}(value: Int) -> Int = {expression}\n")
+            declarations.append(
+                f"export {effect}fun {name}(value: Int) -> Int = {expression}\n"
+            )
             main.append(f"import code.m{module:02d}.{name}\n")
         sources[f"code/m{module:02d}.bfl"] = "".join(declarations)
     main.append("scene start():\n")
@@ -45,12 +49,21 @@ def code_modules(module_count=5, routines_per_module=3000, additions=13, *, susp
     return sources
 
 
-def write_code_project(directory, module_count=5, routines_per_module=3000, additions=13, *, suspending=False):
+def write_code_project(
+    directory,
+    module_count=5,
+    routines_per_module=3000,
+    additions=13,
+    *,
+    suspending=False,
+):
     """Write only workload-owned paths under a caller-selected project directory."""
     directory = Path(directory)
     (directory / "src").mkdir(parents=True, exist_ok=True)
     (directory / "bifoil.toml").write_text('entry = "main.start"\n')
-    sources = code_modules(module_count, routines_per_module, additions, suspending=suspending)
+    sources = code_modules(
+        module_count, routines_per_module, additions, suspending=suspending
+    )
     for name, text in sources.items():
         path = directory / "src" / name
         path.parent.mkdir(parents=True, exist_ok=True)

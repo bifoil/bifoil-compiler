@@ -1,3 +1,4 @@
+mod module_view;
 mod transfer;
 
 use super::*;

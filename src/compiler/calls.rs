@@ -280,9 +280,10 @@ impl Compiler {
     ) -> Result<super::captures::Requirements, String> {
         let mut requirements = Default::default();
         let base = super::overloads::callable_base(expression);
+        let line = base.operation_line(line);
         let signature = &resolved.signature;
         let safe = matches!(base, Expr::Member { safe: true, .. });
-        if let Expr::Member { receiver, name, .. } | Expr::BoundReference(receiver, name) = base
+        if let Expr::Member { receiver, name, .. } | Expr::BoundReference(receiver, name, ..) = base
             && static_symbol(base, &context.scopes).is_none()
         {
             let receiver_type = infer(receiver, &context.scopes)?;

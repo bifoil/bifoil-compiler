@@ -29,7 +29,7 @@ pub(super) fn conditional(
         let condition = &branch.condition;
         if !expression_returns(condition, &mut remaining, analysis)? {
             if let Some(values) = values.as_deref_mut() {
-                values.types.push(Type::Nothing.into());
+                values.bottom(analysis)?;
             }
             reaches = false;
             break;
@@ -42,11 +42,7 @@ pub(super) fn conditional(
             let mut scope = remaining.clone();
             narrow_condition(condition, &mut scope, true);
             if let Some(values) = values.as_deref_mut() {
-                values.types.push(super::super::values::infer_block_result(
-                    &branch.body,
-                    &scope,
-                    values.expected,
-                )?);
+                values.record(&branch.body, &scope, analysis)?;
             } else {
                 scope.push(Arc::default());
                 let body_reaches = block(&branch.body, &mut scope, analysis)?;
@@ -64,11 +60,7 @@ pub(super) fn conditional(
     }
     if reaches {
         if let Some(values) = values {
-            values.types.push(super::super::values::infer_block_result(
-                no,
-                &remaining,
-                values.expected,
-            )?);
+            values.record(no, &remaining, analysis)?;
         } else {
             remaining.push(Arc::default());
             let body_reaches = block(no, &mut remaining, analysis)?;
@@ -190,11 +182,7 @@ pub(super) fn when_statement(
             }
             if body_reaches {
                 if let Some(values) = values.as_deref_mut() {
-                    values.types.push(super::super::values::infer_block_result(
-                        &case.body,
-                        &branch,
-                        values.expected,
-                    )?);
+                    values.record(&case.body, &branch, analysis)?;
                 } else if block(&case.body, &mut branch, analysis)? {
                     branch.pop();
                     paths.add(&base, branch);

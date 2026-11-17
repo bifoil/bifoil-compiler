@@ -89,14 +89,14 @@ impl Builder {
             return Some(Expression::Constant(key));
         }
         match expression {
-            Expr::Unary(operator, inner) if ["!", "-", "+"].contains(&operator.as_str()) => {
+            Expr::Unary(operator, inner, ..) if ["!", "-", "+"].contains(&operator.as_str()) => {
                 self.charge(operator.len())?;
                 Some(Expression::Unary(
                     operator.clone(),
                     Box::new(self.expression(inner, env)?),
                 ))
             }
-            Expr::Binary(operator, left, right)
+            Expr::Binary(operator, left, right, ..)
                 if [
                     "+", "-", "*", "/", "%", "%+", "%-", "==", "!=", "===", "!==", "<", "<=", ">", ">=", "&&", "||",
                 ]
@@ -117,6 +117,7 @@ impl Builder {
                 receiver,
                 name,
                 safe: false,
+                ..
             } if name == "length" => self
                 .value_path(expression, env)
                 .or_else(|| Some(Expression::Length(Box::new(self.expression(receiver, env)?)))),
@@ -124,6 +125,7 @@ impl Builder {
                 receiver,
                 index,
                 safe: false,
+                ..
             } => Some(Expression::TextIndex(
                 Box::new(self.expression(receiver, env)?),
                 Box::new(self.expression(index, env)?),

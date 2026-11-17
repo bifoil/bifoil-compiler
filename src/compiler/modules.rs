@@ -136,7 +136,9 @@ fn prepare(
     deps: &crate::model::ModuleView<'_>,
     started: Instant,
 ) -> Result<Prepared, String> {
-    let (ast, types) = crate::declarations::prepare(ast, name, deps)?;
+    validate_export_names(&ast)?;
+    let (mut ast, types) = crate::declarations::prepare(ast, name, deps)?;
+    super::shared::hoist(&mut ast, name, file)?;
     for alias in &ast.aliases {
         crate::declarations::validate_type(&alias.ty)?;
     }
@@ -495,4 +497,53 @@ fn export_types(ast: &Ast, name: &str, functions: &BTreeMap<String, Function>, e
             exports.insert(definition.name.clone(), Export::Type { id, constructor });
         }
     }
+}
+
+/// A module interface has one exported entity per name. Private lexical type
+/// and value namespaces may overlap; publishing both would make an import
+/// ambiguous and must fail before provisional interfaces are constructed.
+fn validate_export_names(ast: &Ast) -> Result<(), String> {
+    let types = ast
+        .aliases
+        .iter()
+        .filter(|alias| alias.exported)
+        .map(|alias| &alias.name)
+        .chain(
+            ast.types
+                .iter()
+                .filter(|definition| definition.exported)
+                .map(|definition| &definition.name),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    let values = ast
+        .functions
+        .iter()
+        .filter(|function| function.exported)
+        .map(|function| &function.name)
+        .chain(
+            ast.globals
+                .iter()
+                .filter(|global| global.exported)
+                .filter_map(|global| {
+                    if let crate::syntax::StatementKind::Variable { name, .. } = &global.stmt.kind {
+                        Some(name)
+                    } else {
+                        None
+                    }
+                }),
+        )
+        .chain(
+            ast.legacy_globals
+                .iter()
+                .filter(|global| global.exported)
+                .map(|global| &global.name),
+        );
+    for name in values {
+        if types.contains(name) {
+            return Err(format!(
+                "require distinct exported names: '{name}' names both a type and a value"
+            ));
+        }
+    }
+    Ok(())
 }

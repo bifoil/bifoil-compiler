@@ -1,12 +1,12 @@
 //! Literal prose and explicitly escaped executable directives.
 
-use super::Parser;
 use super::text::prose_template;
+use super::{ParseError, Parser};
 use crate::lexer::{LiteralState, indentation};
 use crate::syntax::{Statement, StatementKind};
 
 impl Parser<'_> {
-    pub(super) fn parse_prose_block(&mut self, parent: usize) -> Result<Vec<Statement>, String> {
+    pub(super) fn parse_prose_block(&mut self, parent: usize) -> Result<Vec<Statement>, ParseError> {
         self.block_depth += 1;
         if self.block_depth > 32 {
             return Err(self.error("block nesting budget exceeded"));
@@ -14,7 +14,7 @@ impl Parser<'_> {
         let mut statements = vec![];
         let mut paragraph = String::new();
         let mut literals = LiteralState::default();
-        let mut start = self.line_index + 1;
+        let mut start = self.line();
         while self.line_index < self.source_lines.len() {
             let raw = &self.source_lines[self.line_index];
             if !raw.trim().is_empty() && indentation(raw).0 <= parent {
@@ -22,6 +22,18 @@ impl Parser<'_> {
             }
             let in_expression = literals.continues();
             if raw.trim().is_empty() && !in_expression {
+                // A separator before a dedent belongs to the surrounding suite,
+                // rather than executing once on every loop/branch visit.
+                let Some(offset) = self.source_lines[self.line_index..]
+                    .iter()
+                    .position(|line| !line.trim().is_empty())
+                else {
+                    break;
+                };
+                let next = self.line_index + offset;
+                if indentation(&self.source_lines[next]).0 <= parent {
+                    break;
+                }
                 if !paragraph.is_empty() {
                     statements.push(Statement {
                         line: start,
@@ -30,15 +42,27 @@ impl Parser<'_> {
                     paragraph.clear();
                 }
                 statements.push(Statement {
-                    line: self.line_index + 1,
+                    line: self.line(),
                     kind: StatementKind::ParagraphBreak,
                 });
-                self.line_index += 1;
+                // One boundary represents a whole blank run. Re-scanning that
+                // run for every empty row would take quadratic time.
+                self.line_index = next;
                 continue;
             }
             if raw.trim_start().starts_with('@') && !in_expression {
                 if indentation(raw).0 != parent + 1 {
                     return Err(self.error("directive requires one additional structural level"));
+                }
+                let directive = raw.trim_start().strip_prefix('@').unwrap().trim_start();
+                if directive.starts_with('#') || directive.starts_with("//") {
+                    self.line_index += 1;
+                    continue;
+                }
+                let directive = raw.trim_start().strip_prefix('@').unwrap().trim_start();
+                if directive.starts_with('#') || directive.starts_with("//") {
+                    self.line_index += 1;
+                    continue;
                 }
                 if !paragraph.is_empty() {
                     statements.push(Statement {
@@ -72,7 +96,7 @@ impl Parser<'_> {
                 width -= n;
             }
             if paragraph.is_empty() {
-                start = self.line_index + 1
+                start = self.line()
             } else {
                 // Retain physical lines until template parsing has recorded locations.
                 paragraph.push('\n')

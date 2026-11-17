@@ -82,8 +82,8 @@ impl<'a> Bindings<'a> {
                 )
             }),
             Expr::Reference(name) => self.reference(name, before),
-            Expr::Group(value) | Expr::Unary(_, value) => self.scalar(value, before),
-            Expr::Binary(_, left, right) => self.scalar(left, before) && self.scalar(right, before),
+            Expr::Group(value) | Expr::Unary(_, value, ..) => self.scalar(value, before),
+            Expr::Binary(_, left, right, ..) => self.scalar(left, before) && self.scalar(right, before),
             Expr::Format(parts) => parts.iter().all(|part| self.scalar(&part.value, before)),
             _ => false,
         }

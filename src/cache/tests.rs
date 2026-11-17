@@ -233,3 +233,82 @@ fn warm_markers_use_constant_bounded_reads() {
         .unwrap();
     assert!(!cache.is_warm());
 }
+
+#[test]
+fn stored_cache_publication_preserves_canonical_record_bytes_and_reload_checks() {
+    let (_directory, mut cache, mut module) = fixture();
+    let expected = record(&cache, &module);
+    let mut store = crate::code_store::CodeStore::default();
+    store.record_pending(&mut module, Instant::now()).unwrap();
+    let (module, written) = store.inspect_module(module, |stored| cache.store(stored, "source", Instant::now()));
+    written.unwrap();
+    assert!(module.functions.values().all(|function| function.code.is_empty()));
+    assert_eq!(fs::read_to_string(cache.path("helpers")).unwrap(), expected);
+    assert_eq!(cache.observed("helpers"), Some(Cache::source_hash(&expected).as_str()));
+    let mut reloaded = crate::code_store::CodeStore::default();
+    let module = cache
+        .load("helpers", "source", &mut reloaded, Instant::now())
+        .unwrap()
+        .unwrap();
+    let (_, actual) = reloaded.inspect_module(module, |stored| {
+        serde_json::to_string(&RecordRef {
+            compiler: &cache.compiler,
+            source: "source",
+            module: stored,
+        })
+        .map_err(|error| error.to_string())
+    });
+    assert_eq!(actual.unwrap(), expected);
+}
+
+#[test]
+fn failed_stored_cache_publication_keeps_the_previous_record_and_observed_checksum() {
+    let (_directory, mut cache, mut module) = fixture();
+    cache.store(&module, "source", Instant::now()).unwrap();
+    let previous = fs::read(cache.path("helpers")).unwrap();
+    let expected_checksum = cache.observed("helpers").unwrap().to_owned();
+    let mut store = crate::code_store::CodeStore::default();
+    store.record_pending(&mut module, Instant::now()).unwrap();
+    store.close_for_test();
+    let (module, rejected) =
+        store.inspect_module(module, |stored| cache.store(stored, "changed-source", Instant::now()));
+    assert!(rejected.unwrap_err().contains("closed"));
+    assert!(module.functions.values().all(|function| function.code.is_empty()));
+    assert_eq!(fs::read(cache.path("helpers")).unwrap(), previous);
+    assert_eq!(cache.observed("helpers"), Some(expected_checksum.as_str()));
+}
+
+#[test]
+fn buffered_and_streamed_cache_records_preserve_checksums_and_failure_isolation() {
+    let (_temporary, mut cache, module) = fixture();
+    let original = record(&cache, &module);
+    let expected_instructions = module
+        .functions
+        .values()
+        .map(|function| function.code.len())
+        .sum::<usize>();
+    for padding in [0, BUFFERED_JSON_LIMIT as usize + 1] {
+        let text = " ".repeat(padding) + &original;
+        let path = cache.path("helpers");
+        fs::write(&path, &text).unwrap();
+        let mut pending = crate::code_store::CodeStore::default();
+        let loaded = cache
+            .load("helpers", "source", &mut pending, Instant::now())
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.digest, module.digest);
+        assert_eq!(pending.instructions, expected_instructions);
+        assert_eq!(cache.observed("helpers"), Some(Cache::source_hash(&text).as_str()));
+        let corrupted = text.replacen("\"op\":\"constant\"", "\"op\":\"unknown-op\"", 1);
+        assert_ne!(corrupted, text);
+        fs::write(path, corrupted).unwrap();
+        let mut pending = crate::code_store::CodeStore::default();
+        assert!(
+            cache
+                .load("helpers", "source", &mut pending, Instant::now())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(pending.instructions, 0);
+    }
+}

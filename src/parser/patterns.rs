@@ -1,11 +1,11 @@
 //! When subjects, alternatives, guards, and payload binding syntax.
 
-use super::{Cursor, Parser};
+use super::{Cursor, ParseError, Parser};
 use crate::lexer::{indentation, symbol};
 use crate::syntax::{Pattern, StatementKind, WhenCase};
 
 impl Parser<'_> {
-    pub(super) fn parse_when(&mut self, mut cursor: Cursor, level: usize) -> Result<StatementKind, String> {
+    pub(super) fn parse_when(&mut self, mut cursor: Cursor, level: usize) -> Result<StatementKind, ParseError> {
         let mut binding = None;
         let mut annotation = None;
         if cursor.kw("val") {
@@ -27,14 +27,14 @@ impl Parser<'_> {
         }
         cursor.end().map_err(|e| self.error(e))?;
         self.line_index += 1;
-        self.skip_blank();
+        self.skip_nested_blank(level);
         let mut cases = vec![];
         let mut saw_else = false;
         while self.line_index < self.source_lines.len() && indentation(&self.source_lines[self.line_index]).0 > level {
             if indentation(&self.source_lines[self.line_index]).0 != level + 1 {
                 return Err(self.error("when branches require one additional level"));
             }
-            let line = self.line_index + 1;
+            let line = self.line();
             let mut branch = self.statement_cursor()?;
             let fallback = branch.kw("else");
             if saw_else {
@@ -112,7 +112,7 @@ impl Parser<'_> {
                 fallback,
                 line,
             });
-            self.skip_blank();
+            self.skip_nested_blank(level);
         }
         if cases.is_empty() {
             return Err(self.error("when requires branches"));

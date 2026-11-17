@@ -80,8 +80,10 @@ pub(super) fn builtin_signature(receiver: &Type, name: &str) -> Option<Signature
         return Some(primitive(vec![], Type::Boolean));
     }
     if let Some((family, args, mutable)) = receiver.collection() {
-        if (name == "contains" || name == "containsKey") && args[0].equatable() {
-            return Some(primitive(vec![("element", args[0].clone())], Type::Boolean));
+        let membership = name == "contains" || (family == "Map" && name == "containsKey");
+        if membership && args[0].equatable() {
+            let parameter = if name == "containsKey" { "key" } else { "element" };
+            return Some(primitive(vec![(parameter, args[0].clone())], Type::Boolean));
         }
         if [
             "toList",
@@ -212,6 +214,7 @@ pub(super) fn expression_path(e: &Expr) -> Option<String> {
             receiver,
             name,
             safe: false,
+            ..
         } => Some(format!("{}.{}", expression_path(receiver)?, name)),
         _ => None,
     }
@@ -240,12 +243,12 @@ fn constructor_has_member(receiver: &Expr, name: &str, env: &ScopeStack) -> bool
 
 pub(super) fn check_static_receiver(expression: &Expr, env: &ScopeStack) -> Result<(), String> {
     let base = super::overloads::callable_base(expression);
-    if let Expr::Member { receiver, name, .. } | Expr::BoundReference(receiver, name) = base
+    if let Expr::Member { receiver, name, .. } | Expr::BoundReference(receiver, name, ..) = base
         && constructor_has_member(receiver, name, env)
     {
         return Err(format!("instance member '{name}' requires a receiver value"));
     }
-    let path = if let Expr::BoundReference(receiver, name) = base {
+    let path = if let Expr::BoundReference(receiver, name, ..) = base {
         expression_path(receiver).map(|receiver| format!("{receiver}.{name}"))
     } else {
         expression_path(base)
@@ -264,7 +267,14 @@ pub(super) fn check_static_receiver(expression: &Expr, env: &ScopeStack) -> Resu
 
 pub(super) fn static_symbol(e: &Expr, env: &ScopeStack) -> Option<Binding> {
     if matches!(e, Expr::Member { .. }) {
-        let symbol = lookup(env, &expression_path(e)?)?;
+        let path = expression_path(e)?;
+        let prefix = path.split('.').next()?;
+        // A visible value owns member lookup, even when a type alias has the
+        // same spelling. Do not fall back to its static cases on lookup failure.
+        if super::bindings::lookup_ref(env, prefix).is_some() {
+            return None;
+        }
+        let symbol = lookup(env, &path)?;
         // Instance methods are not static members of their declaring type.
         if symbol
             .callables
@@ -294,6 +304,27 @@ pub(super) fn constant_case(s: &Binding) -> bool {
     } else {
         false
     }
+}
+
+/// Payload-free variants are constructed values, rather than callable references.
+/// Infer their declaration's parameters from the expected value type so both
+/// static checking and emitted construction preserve one concrete identity.
+pub(super) fn constant_case_type(symbol: &Binding, expected: Option<&Type>) -> Result<Type, String> {
+    let signature = symbol.signature().ok_or("constant case requires a constructor")?;
+    if signature.generics.is_empty() {
+        return Ok(signature.result.clone());
+    }
+    let mut arguments = std::collections::BTreeMap::new();
+    if let Some(expected) = expected {
+        crate::generics::infer(
+            &signature.result,
+            expected.present(),
+            &signature.generics,
+            &mut arguments,
+        )?;
+    }
+    crate::generics::check(&signature.generics, &arguments)?;
+    Ok(crate::generics::substitute(&signature.result, &arguments))
 }
 
 pub(super) fn enum_shorthand(name: &str, env: &ScopeStack, expected: Option<&Type>) -> Result<Option<Binding>, String> {

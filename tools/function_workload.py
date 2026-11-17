@@ -67,12 +67,16 @@ def function_modules(scene_count=10, routines_per_scene=8190, *, export_routines
     return sources
 
 
-def write_function_project(directory, scene_count=10, routines_per_scene=8190, *, export_routines=True):
+def write_function_project(
+    directory, scene_count=10, routines_per_scene=8190, *, export_routines=True
+):
     """Write only generated project paths under a caller-selected directory."""
     directory = Path(directory)
     (directory / "src").mkdir(parents=True, exist_ok=True)
     (directory / "bifoil.toml").write_text('entry = "main.start"\n')
-    sources = function_modules(scene_count, routines_per_scene, export_routines=export_routines)
+    sources = function_modules(
+        scene_count, routines_per_scene, export_routines=export_routines
+    )
     for name, text in sources.items():
         path = directory / "src" / name
         path.parent.mkdir(parents=True, exist_ok=True)

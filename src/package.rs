@@ -8,11 +8,12 @@ use crate::code_store::{CodeStore, StoredFunctions};
 use crate::function_catalog::{FunctionCatalog, HeaderDigest};
 use crate::model::{PROFILE, Program};
 use serde::Serialize;
+use serde::ser::{SerializeMap, Serializer};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 
-pub(crate) const FORMAT: &str = "bifoil.package.v1";
+pub(crate) const FORMAT: &str = "bifoil.package.v2";
 const CHUNK_FORMAT: &str = "bifoil.code.v1";
 const CHUNK_PREFIX: &str = "*comment Bifoil compiled code scene\n*bifoil_module ";
 const CHUNK_SUFFIX: &str = "\n*return\n";
@@ -38,6 +39,34 @@ struct Manifest<'a, F> {
     #[serde(flatten)]
     program: &'a Program<F>,
     chunks: &'a BTreeMap<String, Reference>,
+    function_headers: &'a RuntimeHeaders<'a>,
+}
+
+/// Serialize only one checked runtime header at a time. Full signature graphs
+/// were retired during linking; recover them from their verified spool records
+/// without retaining every header or decoding ordinary instruction payloads.
+struct RuntimeHeaders<'a> {
+    code: &'a CodeStore,
+    functions: &'a FunctionCatalog<HeaderDigest>,
+}
+impl Serialize for RuntimeHeaders<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut output = serializer.serialize_map(Some(self.functions.len()))?;
+        for (module, headers) in self.functions.groups() {
+            let _records = self
+                .code
+                .record_scope(headers.keys().map(String::as_str))
+                .map_err(serde::ser::Error::custom)?;
+            for (id, proof) in headers {
+                let header = self
+                    .code
+                    .runtime_header(id, proof, module)
+                    .map_err(serde::ser::Error::custom)?;
+                output.serialize_entry(id, &header)?;
+            }
+        }
+        output.end()
+    }
 }
 
 pub(crate) fn prepare<F: Serialize>(
@@ -89,19 +118,21 @@ pub(crate) fn prepare<F: Serialize>(
         );
     }
     crate::trace::event(start, format_args!("preparing root"));
+    let headers = RuntimeHeaders {
+        code: sources.code,
+        functions: sources.functions,
+    };
     program.build = artifact::digest(&Manifest {
         program,
         chunks: &references,
+        function_headers: &headers,
     })?;
     let manifest = Manifest {
         program,
         chunks: &references,
+        function_headers: &headers,
     };
-    let mut prefix = format!("*comment Bifoil AOT package; requires {FORMAT}\n");
-    for reference in references.values() {
-        prefix += &format!("*gosub_scene {}\n", reference.scene);
-    }
-    prefix += "*bifoil ";
+    let prefix = format!("*comment Bifoil AOT package; requires {FORMAT}\n*bifoil ");
     let root = match artifact::matching_json_checksum(output, &manifest, &prefix, "\n", start)? {
         Some(checksum) => Root::Existing(checksum),
         None => Root::Pending(artifact::prepare_json(output, &manifest, &prefix, "\n", start)?),

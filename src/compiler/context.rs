@@ -24,6 +24,8 @@ pub(super) struct FunctionContext {
     pub(super) source_file: Arc<str>,
     pub(super) function_id: String,
     pub(super) return_type: Type,
+    // Only Unit-context anonymous functions discard value-bearing returns.
+    pub(super) discard_return_values: bool,
     pub(super) may_suspend: bool,
     pub(super) loop_stack: Vec<LoopState>,
     pub(super) next_iterator_id: usize,

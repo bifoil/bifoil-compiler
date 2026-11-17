@@ -32,6 +32,7 @@ mod operators;
 mod overloads;
 mod patterns;
 mod prose;
+mod ranges;
 mod reachability;
 mod result_types;
 mod return_inference;

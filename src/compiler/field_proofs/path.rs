@@ -6,13 +6,15 @@ use crate::syntax::Expr;
 
 fn source(expression: &Expr, env: &ScopeStack) -> Option<ValuePath> {
     match expression {
-        Expr::Group(value) | Expr::Unwrap(value) => source(value, env),
+        Expr::Group(value) | Expr::Unwrap(value, ..) => source(value, env),
         Expr::Name(name) => Some(ValuePath {
             root: name.clone(),
             steps: Vec::new(),
             safe_prefixes: Vec::new(),
         }),
-        Expr::Member { receiver, name, safe } => {
+        Expr::Member {
+            receiver, name, safe, ..
+        } => {
             let mut path = source(receiver, env)?;
             if *safe {
                 path.safe_prefixes.push(path.steps.len());
@@ -20,7 +22,9 @@ fn source(expression: &Expr, env: &ScopeStack) -> Option<ValuePath> {
             path.steps.push(Step::Field(name.clone()));
             Some(path)
         }
-        Expr::Index { receiver, index, safe } => {
+        Expr::Index {
+            receiver, index, safe, ..
+        } => {
             let selector = selector(index, env)?;
             let mut path = source(receiver, env)?;
             if *safe {

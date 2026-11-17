@@ -1,16 +1,16 @@
 //! Function, variable, nominal-type, and alias declaration grammar.
 
-use super::{Cursor, Parser};
+use super::{Cursor, ParseError, Parser};
 use crate::lexer::{indentation, name};
 use crate::model::Type;
 use crate::syntax::{AliasAst, FieldAst, FunctionAst, Parameter, Statement, StatementKind, TypeAst};
 
 impl Parser<'_> {
-    pub(super) fn parse_function(&mut self, mut cursor: Cursor, exported: bool) -> Result<FunctionAst, String> {
+    pub(super) fn parse_function(&mut self, mut cursor: Cursor, exported: bool) -> Result<FunctionAst, ParseError> {
         let line = if cursor.source_line > 0 {
             cursor.source_line
         } else {
-            self.line_index + 1
+            self.line()
         };
         let legacy = cursor.kw("legacy");
         let suspend = cursor.kw("suspend");
@@ -70,6 +70,7 @@ impl Parser<'_> {
             target.transfer = transfer;
             self.line_index += 1;
             return Ok(FunctionAst {
+                prose_body: false,
                 legacy: Some(target),
                 generics,
                 name: fname,
@@ -106,6 +107,7 @@ impl Parser<'_> {
             return Err(self.error("scene result is Unit"));
         }
         Ok(FunctionAst {
+            prose_body: self.prose_mode && !expression,
             legacy: None,
             generics,
             name: fname,
@@ -120,7 +122,7 @@ impl Parser<'_> {
         })
     }
 
-    pub(super) fn parse_variable(&mut self, mut cursor: Cursor) -> Result<StatementKind, String> {
+    pub(super) fn parse_variable(&mut self, mut cursor: Cursor) -> Result<StatementKind, ParseError> {
         let mutable = cursor.kw("var");
         if !mutable && !cursor.kw("val") {
             return Err(self.error("expected val or var"));
@@ -142,6 +144,7 @@ impl Parser<'_> {
         let value = cursor.expr(0, 0).map_err(|e| self.error(e))?;
         cursor.end().map_err(|e| self.error(e))?;
         Ok(StatementKind::Variable {
+            shared: false,
             name,
             ty,
             mutable,
@@ -149,7 +152,7 @@ impl Parser<'_> {
         })
     }
 
-    pub(super) fn parse_type_declaration(&mut self, mut cursor: Cursor, exported: bool) -> Result<TypeAst, String> {
+    pub(super) fn parse_type_declaration(&mut self, mut cursor: Cursor, exported: bool) -> Result<TypeAst, ParseError> {
         let kind = if cursor.kw("data") {
             if !cursor.kw("class") {
                 return Err(self.error("expected class"));
@@ -278,7 +281,7 @@ impl Parser<'_> {
         Ok(result)
     }
 
-    pub(super) fn parse_alias(&mut self, mut cursor: Cursor, exported: bool) -> Result<AliasAst, String> {
+    pub(super) fn parse_alias(&mut self, mut cursor: Cursor, exported: bool) -> Result<AliasAst, ParseError> {
         let name = cursor.ident()?;
         let mut generics = cursor.generics()?;
         cursor.need("=")?;

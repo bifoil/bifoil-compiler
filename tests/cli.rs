@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod code_capacity;
 #[path = "cli/encoded_modules.rs"]
 mod encoded_modules;
+#[path = "cli/file_detection.rs"]
+mod file_detection;
 #[path = "cli/flow_memory.rs"]
 mod flow_memory;
 #[path = "cli/function_capacity.rs"]

@@ -161,8 +161,8 @@ scene start():
     fs::remove_file(project.0.join("src/helpers.bfl")).unwrap();
     let path = project.0.join("modules/helpers.bfm.json");
     let text = fs::read_to_string(&path).unwrap();
-    assert!(text.contains("bifoil.module.v3"));
-    fs::write(path, text.replace("bifoil.module.v3", "bifoil.module.v2")).unwrap();
+    assert!(text.contains("bifoil.module.v6"));
+    fs::write(path, text.replace("bifoil.module.v6", "bifoil.module.v3")).unwrap();
     let result = project.run(&arguments);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("recompile"));

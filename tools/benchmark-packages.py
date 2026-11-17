@@ -42,7 +42,9 @@ def inventory(directory):
 
 
 def program(path):
-    line = next(line for line in path.read_text().splitlines() if line.startswith("*bifoil "))
+    line = next(
+        line for line in path.read_text().splitlines() if line.startswith("*bifoil ")
+    )
     return json.loads(line.removeprefix("*bifoil "))
 
 
@@ -53,12 +55,17 @@ def generate(root, modules, functions):
     for index in range(modules):
         (source / f"part{index:02}.bfl").write_text(
             "".join(
-                f"export fun f{number:04}(value: Int) -> Int = value" + " + 1" * 10 + "\n"
+                f"export fun f{number:04}(value: Int) -> Int = value"
+                + " + 1" * 10
+                + "\n"
                 for number in range(functions)
             )
         )
     (source / "main.bfl").write_text(
-        "".join(f"import part{index:02}.f0000 as call{index:02}\n" for index in range(modules))
+        "".join(
+            f"import part{index:02}.f0000 as call{index:02}\n"
+            for index in range(modules)
+        )
         + "scene start():\n    var total = 0\n"
         + "".join(f"    total += call{index:02}(1)\n" for index in range(modules))
         + '    choice:\n        option "Continue":\n            prose:\n                ${total}\n'
@@ -66,9 +73,18 @@ def generate(root, modules, functions):
 
 
 def execute(output, expected, config, runtime, node):
-    path = windows_path if node.suffix.lower() == ".exe" else lambda value: str(value.resolve())
+    path = (
+        windows_path
+        if node.suffix.lower() == ".exe"
+        else lambda value: str(value.resolve())
+    )
     result = subprocess.run(
-        [str(node), path(runtime / "tools/execute-conformance.mjs"), path(output), path(config)],
+        [
+            str(node),
+            path(runtime / "tools/execute-conformance.mjs"),
+            path(output),
+            path(config),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -99,7 +115,11 @@ def benchmark(compiler, root, packaged, options, config):
         if result["status"]:
             raise RuntimeError(f"{phase} failed: {result['stderr']}")
         current = inventory(output.parent)
-        written = {name: record for name, record in current.items() if previous.get(name) != record}
+        written = {
+            name: record
+            for name, record in current.items()
+            if previous.get(name) != record
+        }
         result["written_files"] = sorted(written)
         result["written_bytes"] = sum(record["bytes"] for record in written.values())
         result["root_sha256"] = current["startup.txt"]["sha256"]
@@ -111,12 +131,20 @@ def benchmark(compiler, root, packaged, options, config):
         if phase == "leaf_edit" and packaged:
             changed_code = [name for name in written if name.startswith("bifoil_code_")]
             if len(changed_code) != 1 or "startup.txt" not in written:
-                raise RuntimeError("leaf edit did not replace exactly one code scene and its root")
-            if any(current.get(name) != record for name, record in initial_files.items() if name != "startup.txt"):
+                raise RuntimeError(
+                    "leaf edit did not replace exactly one code scene and its root"
+                )
+            if any(
+                current.get(name) != record
+                for name, record in initial_files.items()
+                if name != "startup.txt"
+            ):
                 raise RuntimeError("immutable code scenes changed after publication")
         if options.runtime:
             expected = options.modules * 11 + (1 if phase == "leaf_edit" else 0)
-            result["execution"] = execute(output, expected, config, options.runtime, options.node)
+            result["execution"] = execute(
+                output, expected, config, options.runtime, options.node
+            )
         if result["compiler_peak_rss_bytes"] >= 250_000_000:
             raise RuntimeError("bounded workload exceeded the memory contract")
         if phase != "populate" and result["wall_seconds"] >= 10:
@@ -136,7 +164,9 @@ def verify_baseline(report, before, after):
         old = report["runs"][before][phase]["root_sha256"]
         new = report["runs"][after][phase]["root_sha256"]
         if old != new:
-            raise RuntimeError(f"{after} output changed relative to the baseline compiler")
+            raise RuntimeError(
+                f"{after} output changed relative to the baseline compiler"
+            )
 
 
 def compare_programs(root, runtime, node):
@@ -144,7 +174,9 @@ def compare_programs(root, runtime, node):
     windows = node.suffix.lower() == ".exe"
     path = windows_path if windows else lambda value: str(value.resolve())
     loader = path(runtime / "src/node-program.mjs")
-    loader_url = "file:///" + quote(loader, safe="/:") if windows else Path(loader).as_uri()
+    loader_url = (
+        "file:///" + quote(loader, safe="/:") if windows else Path(loader).as_uri()
+    )
     script = f"""
         import {{readCompiledProgram}} from {json.dumps(loader_url)};
         import {{isDeepStrictEqual}} from 'node:util';
@@ -166,7 +198,10 @@ def compare_programs(root, runtime, node):
     """
     subprocess.run(
         [
-            str(node), "--input-type=module", "-e", script,
+            str(node),
+            "--input-type=module",
+            "-e",
+            script,
             path(root / "inline/scenes/startup.txt"),
             path(root / "package/scenes/startup.txt"),
         ],
@@ -179,9 +214,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("compiler", type=Path)
     parser.add_argument("output_directory", type=Path)
-    parser.add_argument("--baseline", type=Path, help="compare the previous executable's inline output")
-    parser.add_argument("--package-baseline", type=Path, help="compare earlier package build performance")
-    parser.add_argument("--runtime", type=Path, help="explicit runtime checkout for restored execution")
+    parser.add_argument(
+        "--baseline", type=Path, help="compare the previous executable's inline output"
+    )
+    parser.add_argument(
+        "--package-baseline",
+        type=Path,
+        help="compare earlier package build performance",
+    )
+    parser.add_argument(
+        "--runtime", type=Path, help="explicit runtime checkout for restored execution"
+    )
     parser.add_argument("--node", type=Path, help="explicit Node executable")
     parser.add_argument("--modules", type=int, default=63)
     parser.add_argument("--functions", type=int, default=60)
@@ -189,7 +232,9 @@ def main():
     if bool(options.runtime) != bool(options.node):
         parser.error("--runtime and --node must be supplied together")
     valid_modules = 1 <= options.modules <= 63
-    valid_functions = options.functions >= 1 and options.modules * options.functions <= 4000
+    valid_functions = (
+        options.functions >= 1 and options.modules * options.functions <= 4000
+    )
     if not valid_modules or not valid_functions:
         parser.error("workload must fit the current bounded module/function profile")
     options.compiler = options.compiler.resolve()
@@ -212,7 +257,9 @@ def main():
     if options.package_baseline:
         modes.insert(0, ("baseline_package", options.package_baseline.resolve(), True))
     for mode, compiler, packaged in modes:
-        report["runs"][mode] = benchmark(compiler, root / mode, packaged, options, config)
+        report["runs"][mode] = benchmark(
+            compiler, root / mode, packaged, options, config
+        )
         (root / "measurement.json").write_text(json.dumps(report, indent=2) + "\n")
     if options.baseline:
         verify_baseline(report, "baseline_inline", "inline")
@@ -224,9 +271,16 @@ def main():
         compare_programs(root, options.runtime, options.node)
         report["assembled_code_and_metadata_match"] = True
     linked = program(root / "inline/scenes/startup.txt")
-    report["instructions"] = sum(len(function["code"]) for function in linked["functions"].values())
-    report["source_bytes"] = sum(path.stat().st_size for path in (root / "inline/src").glob("*.bfl"))
-    report["source_lines"] = sum(len(path.read_text().splitlines()) for path in (root / "inline/src").glob("*.bfl"))
+    report["instructions"] = sum(
+        len(function["code"]) for function in linked["functions"].values()
+    )
+    report["source_bytes"] = sum(
+        path.stat().st_size for path in (root / "inline/src").glob("*.bfl")
+    )
+    report["source_lines"] = sum(
+        len(path.read_text().splitlines())
+        for path in (root / "inline/src").glob("*.bfl")
+    )
     (root / "measurement.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 

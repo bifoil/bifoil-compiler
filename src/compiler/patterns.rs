@@ -20,7 +20,14 @@ fn constant_variant(value: &Expr, expected: &Type, env: &super::ScopeStack) -> R
     } else {
         None
     };
-    Ok(binding.filter(super::constant_case).map(|binding| binding.runtime))
+    let Some(binding) = binding.filter(super::constant_case) else {
+        return Ok(None);
+    };
+    let expected = crate::generics::member_view(expected.present());
+    let actual = super::members::constant_case_type(&binding, Some(&expected))?;
+    // A case name establishes coverage only for its checked instantiation.
+    // Declaration identity alone must not cover an unrelated generic view.
+    Ok(actual.subtype_of(&expected).then_some(binding.runtime))
 }
 
 pub(super) fn when_exhaustive(
@@ -46,13 +53,11 @@ pub(super) fn when_exhaustive(
             .flat_map(|context| &context.patterns)
             .collect::<Vec<_>>();
         let mut constant_variants = BTreeSet::new();
-        if def.kind == "enum" || args.is_empty() {
-            for pattern in &covered {
-                if let Pattern::Value(value) = pattern
-                    && let Some(id) = constant_variant(value, subject.unwrap(), env)?
-                {
-                    constant_variants.insert(id);
-                }
+        for pattern in &covered {
+            if let Pattern::Value(value) = pattern
+                && let Some(id) = constant_variant(value, subject.unwrap(), env)?
+            {
+                constant_variants.insert(id);
             }
         }
         let all = def.variants.iter().all(|variant| {

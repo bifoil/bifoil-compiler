@@ -31,6 +31,7 @@ pub(super) fn generate_constructor(declaration: &TypeAst, spec: ConstructorSpec)
                     receiver: Box::new(Expr::Name("this".into())),
                     name: field.name.clone(),
                     safe: false,
+                    line: 0,
                 }),
             },
         })
@@ -41,6 +42,7 @@ pub(super) fn generate_constructor(declaration: &TypeAst, spec: ConstructorSpec)
         .map(|field| (field.name.clone(), Expr::Name(field.name.clone())))
         .collect();
     FunctionAst {
+        prose_body: false,
         legacy: None,
         name: spec.name,
         generics: spec.generics,

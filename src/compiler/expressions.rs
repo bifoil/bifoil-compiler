@@ -13,6 +13,22 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 impl Compiler {
+    fn load_binding(
+        &mut self,
+        name: &str,
+        context: &mut FunctionContext,
+        line: usize,
+        expected: Option<&Type>,
+    ) -> Result<(Type, super::captures::Requirements), String> {
+        let symbol = lookup(&context.scopes, name).ok_or_else(|| format!("unknown binding '{name}'"))?;
+        if context.is_reachable && symbol.owner == context.function_id && !symbol.initialized {
+            return Err(format!("binding '{name}' is not definitely initialized"));
+        }
+        let ty = symbol.value_type(expected);
+        context.emit(Op::Load { name: symbol.runtime }, line);
+        Ok((ty, symbol.requires))
+    }
+
     pub(super) fn expression(&mut self, e: &Expr, context: &mut FunctionContext, line: usize) -> Result<Type, String> {
         self.expression_as(e, context, line, None)
     }
@@ -24,6 +40,7 @@ impl Compiler {
         line: usize,
         expected: Option<&Type>,
     ) -> Result<Type, String> {
+        let line = e.operation_line(line);
         self.check_budget(context)?;
         super::members::check_static_receiver(e, &context.scopes)?;
         constant_number(e)?;
@@ -46,15 +63,16 @@ impl Compiler {
             context.value_requirements = sym.requires.clone();
             let ty = if constant_case(&sym) {
                 let sig = sym.signature().unwrap();
+                let result = super::members::constant_case_type(&sym, expected)?;
                 context.emit(
                     Op::Construct {
-                        ty: sig.result.clone(),
+                        ty: result.clone(),
                         fields: vec![],
                         tag: sig.id.rsplit('.').next().map(str::to_string),
                     },
                     line,
                 );
-                sig.result.clone()
+                result
             } else {
                 context.emit(Op::Load { name: sym.runtime }, line);
                 sym.ty
@@ -73,7 +91,13 @@ impl Compiler {
                     let expected = crate::declarations::field(ty, name)
                         .ok_or("unknown constructed field")?
                         .ty;
-                    let actual = self.expression_as(e, context, line, Some(&expected))?;
+                    let actual = if let Expr::Name(name) = e {
+                        let (ty, captured) = self.load_binding(name, context, line, Some(&expected))?;
+                        context.value_requirements = captured;
+                        ty
+                    } else {
+                        self.expression_as(e, context, line, Some(&expected))?
+                    };
                     context.convert(&actual, &expected, line)?;
                 }
                 context.emit(
@@ -96,17 +120,16 @@ impl Compiler {
                 context.emit(Op::Exit, line);
             }
             Expr::Lambda(fun) => {
-                let capture = super::captures::callable_captures(fun);
-                let capture_names = capture.all_names();
-                requirements = capture
+                let capture_names = super::captures::callable_captures(fun).all_names();
+                let fun = lambda_definition(fun, &context.scopes, expected)?;
+                requirements = super::captures::lambda_captures(&fun)
                     .body
                     .into_iter()
                     .filter(|required| super::captures::capture_binding(&context.scopes, required.name()).is_some())
                     .collect();
-                let fun = lambda_definition(fun, &context.scopes, expected)?;
                 let id = format!("{}$lambda:{}:{}", context.function_id, line, context.instructions.len());
                 let sig = signature(&fun, id.clone());
-                self.function(&fun, super::functions::FunctionEnvironment::new(&context.scopes), sig)?;
+                self.lambda_function(&fun, super::functions::FunctionEnvironment::new(&context.scopes), sig)?;
                 let captures = super::captures::runtime_capture_names(&capture_names, &context.scopes);
                 context.emit(
                     Op::FunctionValue {
@@ -178,18 +201,15 @@ impl Compiler {
                 context.emit(unit(), line);
             }
             Expr::Name(n) | Expr::Reference(n) => {
-                let sym = lookup(&context.scopes, n).ok_or_else(|| format!("unknown binding '{n}'"))?;
-                if context.is_reachable && sym.owner == context.function_id && !sym.initialized {
-                    return Err(format!("binding '{n}' is not definitely initialized"));
-                }
-                if matches!(e, Expr::Reference(_)) && sym.signature().is_none() {
+                if matches!(e, Expr::Reference(_))
+                    && super::bindings::lookup_ref(&context.scopes, n).is_none_or(|symbol| symbol.signature().is_none())
+                {
                     return Err(":: requires a declared function or scene".into());
                 }
-                requirements = sym.requires;
-                context.emit(Op::Load { name: sym.runtime }, line);
+                requirements = self.load_binding(n, context, line, expected)?.1;
             }
             Expr::Group(e) => return self.expression_as(e, context, line, expected),
-            Expr::Unary(op, e) => {
+            Expr::Unary(op, e, ..) => {
                 if op == "-" && matches!(e.as_ref(), Expr::Int(2147483648)) {
                     context.emit(
                         Op::Constant {
@@ -203,7 +223,7 @@ impl Compiler {
                     context.emit(Op::Unary { operator: op.clone() }, line);
                 }
             }
-            Expr::Binary(op, a, b) => {
+            Expr::Binary(op, a, b, ..) => {
                 if op == "?:" {
                     let left = self.expression(a, context, line)?;
                     requirements.extend(context.value_requirements.iter().cloned());
@@ -286,13 +306,25 @@ impl Compiler {
                                 return Err("constant range step must be positive".into());
                             }
                             context.emit(Op::RangeStep, line);
+                        } else if op == "===" || op == "!==" {
+                            context.emit(
+                                Op::ExactCompare {
+                                    left_type: left,
+                                    right_type: right,
+                                    negate: op == "!==",
+                                },
+                                line,
+                            );
                         } else {
+                            if op == "in" || op == "!in" {
+                                super::ranges::membership_view(&right, context, line);
+                            }
                             context.emit(Op::Binary { operator: op.clone() }, line);
                         }
                     }
                 }
             }
-            Expr::Call(callee, args) | Expr::SafeCall(callee, args) => {
+            Expr::Call(callee, args, ..) | Expr::SafeCall(callee, args, ..) => {
                 self.call(
                     callee,
                     args,
@@ -341,7 +373,9 @@ impl Compiler {
                     );
                 }
             }
-            Expr::Member { receiver, name, safe } => {
+            Expr::Member {
+                receiver, name, safe, ..
+            } => {
                 self.expression(receiver, context, line)?;
                 requirements = context.value_requirements.clone();
                 let jump = if *safe {
@@ -371,7 +405,7 @@ impl Compiler {
                     context.patch(jump, context.instructions.len())
                 }
             }
-            Expr::BoundReference(receiver, name) => {
+            Expr::BoundReference(receiver, name, ..) => {
                 let receiver_type = infer(receiver, &context.scopes)?;
                 let member = member_type(&receiver_type, name)?;
                 let function = super::members::resolved_member_target(&receiver_type, name);
@@ -389,7 +423,9 @@ impl Compiler {
                     line,
                 );
             }
-            Expr::Index { receiver, index, safe } => {
+            Expr::Index {
+                receiver, index, safe, ..
+            } => {
                 let base = infer(receiver, &context.scopes)?;
                 let (key, _) = index_types(base.present())?;
                 super::constants::check_index(receiver, index, base.present())?;
@@ -418,7 +454,7 @@ impl Compiler {
                     skipped.merge(context);
                 }
             }
-            Expr::Unwrap(e) => {
+            Expr::Unwrap(e, ..) => {
                 let source_expected = expected.map(Type::nullable);
                 self.expression_as(e, context, line, source_expected.as_ref())?;
                 requirements = context.value_requirements.clone();
@@ -426,7 +462,9 @@ impl Compiler {
                 super::flow::narrow_present(e, &mut context.scopes);
             }
             Expr::Spread(_) => return Err("spread is only valid in a variadic call".into()),
-            Expr::TypeOp { value, operator, ty } => {
+            Expr::TypeOp {
+                value, operator, ty, ..
+            } => {
                 self.expression(value, context, line)?;
                 requirements = context.value_requirements.clone();
                 context.emit(
@@ -453,7 +491,7 @@ impl Compiler {
                     let Some(value) = value else {
                         return Err("scene operation requires a destination".into());
                     };
-                    let Expr::Call(callee, args) = value.as_ref() else {
+                    let Expr::Call(callee, args, ..) = value.as_ref() else {
                         return Err("scene operation requires destination(arguments)".into());
                     };
                     if !context.may_suspend {
@@ -509,11 +547,13 @@ impl Compiler {
         context: &mut FunctionContext,
         line: usize,
     ) -> Result<Type, String> {
+        let line = target.operation_line(line);
         match target {
             Expr::Index {
                 receiver,
                 index,
                 safe: false,
+                ..
             } => {
                 let actual = infer(receiver, &context.scopes)?;
                 if actual.permits_null() {
@@ -538,13 +578,15 @@ impl Compiler {
                 receiver,
                 name,
                 safe: false,
+                ..
             } => {
                 let ty = infer(receiver, &context.scopes)?;
                 if ty.permits_null() {
                     return Err("nullable assignment receiver requires a null check".into());
                 }
                 access_member(&ty, name, &context.scopes)?;
-                let field = crate::declarations::field(&ty, name).ok_or("property is not a mutable data field")?;
+                let field =
+                    crate::declarations::field_for_write(&ty, name).ok_or("property is not a mutable data field")?;
                 if !field.mutable {
                     return Err("cannot assign to val field".into());
                 }

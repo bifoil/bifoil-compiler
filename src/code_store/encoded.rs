@@ -10,7 +10,8 @@ use std::fmt;
 use std::sync::{Arc, OnceLock, Weak};
 
 pub(crate) struct EncodedFunction {
-    value: Box<RawValue>,
+    parts: FunctionParts,
+    byte_len: usize,
     instructions: usize,
     header_checksum: [u8; 32],
     checked_header: OnceLock<CheckedHeader>,
@@ -32,12 +33,14 @@ impl CheckedHeader {
     }
 }
 
-#[derive(Deserialize)]
-struct Body<'a> {
-    #[serde(borrow)]
-    signature: &'a RawValue,
-    #[serde(borrow)]
-    code: &'a RawValue,
+/// These are the canonical writer's four fields, in serialization order.
+/// Keeping the checked raw fields avoids reparsing a long literal merely to
+/// retrieve a signature or serialize an already validated instruction array.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionParts {
+    signature: Box<RawValue>,
+    code: Box<RawValue>,
     init: bool,
     #[serde(default)]
     local: bool,
@@ -45,18 +48,19 @@ struct Body<'a> {
 
 impl EncodedFunction {
     pub(super) fn new(bytes: String, expected: usize) -> Result<Self, String> {
-        let value = RawValue::from_string(bytes).map_err(|error| error.to_string())?;
-        let body: Body<'_> = serde_json::from_str(value.get()).map_err(|error| error.to_string())?;
-        let mut decoder = serde_json::Deserializer::from_str(body.code.get());
+        let byte_len = bytes.len();
+        let parts: FunctionParts = serde_json::from_str(&bytes).map_err(|error| error.to_string())?;
+        let mut decoder = serde_json::Deserializer::from_str(parts.code.get());
         let count = decoder
             .deserialize_seq(InstructionCount)
             .map_err(|error| error.to_string())?;
         if count != expected {
             return Err("stored instruction count changed".into());
         }
-        let header_checksum = crate::artifact::digest_bytes(&(body.signature, body.init, body.local))?;
+        let header_checksum = crate::artifact::digest_bytes(&(&parts.signature, parts.init, parts.local))?;
         Ok(Self {
-            value,
+            parts,
+            byte_len,
             instructions: count,
             header_checksum,
             checked_header: OnceLock::new(),
@@ -101,8 +105,11 @@ impl EncodedFunction {
     }
 
     pub(super) fn header(&self) -> Result<super::FunctionHeader, String> {
-        let header: super::FunctionHeader =
-            serde_json::from_str(self.value.get()).map_err(|error| error.to_string())?;
+        let header = super::FunctionHeader {
+            signature: serde_json::from_str(self.parts.signature.get()).map_err(|error| error.to_string())?,
+            init: self.parts.init,
+            local: self.parts.local,
+        };
         let checksum = crate::artifact::digest_bytes(&(&header.signature, header.init, header.local))?;
         if checksum != self.header_checksum {
             return Err("stored header representation changed".into());
@@ -110,34 +117,48 @@ impl EncodedFunction {
         Ok(header)
     }
 
+    pub(super) fn runtime_header<'a>(&self, module: &'a str) -> Result<super::RuntimeHeader<'a>, String> {
+        let header = self.header()?;
+        let metadata = super::runtime_header::scan(self.parts.code.get())?;
+        if metadata.instructions != self.instructions {
+            return Err("stored runtime instruction count changed".into());
+        }
+        Ok(super::RuntimeHeader {
+            module,
+            signature: header.signature,
+            init: header.init,
+            local: header.local,
+            instructions: metadata.instructions,
+            continuations: metadata.continuations,
+            captures: metadata.captures,
+        })
+    }
+
     pub(super) fn byte_len(&self) -> usize {
-        self.value.get().len()
+        self.byte_len
     }
 
     pub(super) fn has_legacy_calls(&self) -> Result<bool, String> {
-        let body = self.body().map_err(|error| error.to_string())?;
-        super::legacy_scan::contains(body.code.get())
+        super::legacy_scan::contains(self.parts.code.get())
     }
 
     pub(super) fn decoded(&self) -> Result<crate::model::Function, String> {
-        serde_json::from_str(self.value.get()).map_err(|error| error.to_string())
-    }
-
-    fn body(&self) -> Result<Body<'_>, serde_json::Error> {
-        serde_json::from_str(self.value.get())
+        Ok(crate::model::Function {
+            signature: serde_json::from_str(self.parts.signature.get()).map_err(|error| error.to_string())?,
+            code: serde_json::from_str(self.parts.code.get()).map_err(|error| error.to_string())?,
+            init: self.parts.init,
+            local: self.parts.local,
+        })
     }
 
     pub(crate) fn serialize_code<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.body()
-            .map_err(serde::ser::Error::custom)?
-            .code
-            .serialize(serializer)
+        self.parts.code.serialize(serializer)
     }
 }
 
 impl Serialize for EncodedFunction {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.value.serialize(serializer)
+        self.parts.serialize(serializer)
     }
 }
 
@@ -155,5 +176,45 @@ impl<'de> Visitor<'de> for InstructionCount {
             count += 1;
         }
         Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EncodedFunction;
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+
+    #[test]
+    fn checked_parts_keep_canonical_function_bytes_and_reject_unrepresented_fields() {
+        let module = crate::compiler::compile(
+            crate::parser::parse(
+                "export fun text() -> String = \"line \\\"quoted\\\" ${3.0}\"\n",
+                "src/parts.bfl",
+            )
+            .unwrap(),
+            "parts",
+            "src/parts.bfl",
+            &BTreeMap::new(),
+            Instant::now(),
+        )
+        .unwrap();
+        let function = &module.functions["parts.text"];
+        let original = serde_json::to_string(function).unwrap();
+        let encoded = EncodedFunction::new(original.clone(), function.code.len()).unwrap();
+        assert_eq!(serde_json::to_string(&encoded).unwrap(), original);
+        assert_eq!(serde_json::to_string(&encoded.decoded().unwrap()).unwrap(), original);
+        assert_eq!(encoded.byte_len(), original.len());
+        assert!(!encoded.has_legacy_calls().unwrap());
+        assert_eq!(encoded.header().unwrap().signature, function.signature);
+        assert_eq!(
+            encoded.runtime_header("parts").unwrap().instructions,
+            function.code.len()
+        );
+
+        for prefix in ["{\"unknown\":true,", "{\"init\":false,"] {
+            let changed = prefix.to_owned() + &original[1..];
+            assert!(EncodedFunction::new(changed, function.code.len()).is_err());
+        }
     }
 }

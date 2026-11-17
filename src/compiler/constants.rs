@@ -9,22 +9,22 @@ pub(super) fn constant_boolean(expr: &Expr) -> Option<bool> {
     match expr {
         Expr::Boolean(value) => Some(*value),
         Expr::Group(inner) => constant_boolean(inner),
-        Expr::Unary(operator, inner) if operator == "!" => constant_boolean(inner).map(|value| !value),
-        Expr::Binary(operator, left, right) if operator == "&&" => {
+        Expr::Unary(operator, inner, ..) if operator == "!" => constant_boolean(inner).map(|value| !value),
+        Expr::Binary(operator, left, right, ..) if operator == "&&" => {
             if constant_boolean(left)? {
                 constant_boolean(right)
             } else {
                 Some(false)
             }
         }
-        Expr::Binary(operator, left, right) if operator == "||" => {
+        Expr::Binary(operator, left, right, ..) if operator == "||" => {
             if constant_boolean(left)? {
                 Some(true)
             } else {
                 constant_boolean(right)
             }
         }
-        Expr::Binary(operator, left, right)
+        Expr::Binary(operator, left, right, ..)
             if ["==", "!=", "===", "!==", "<", "<=", ">", ">="].contains(&operator.as_str()) =>
         {
             constant_comparison(operator, left, right)
@@ -98,8 +98,8 @@ pub(super) fn constant_number(expr: &Expr) -> Result<Option<(Type, f64)>, String
         Expr::Int(n) => Some((Type::Int, *n as f64)),
         Expr::Float(n) => Some((Type::Float, *n)),
         Expr::Group(e) => return constant_number(e),
-        Expr::Unary(op, e) if op == "-" => constant_number(e)?.map(|(ty, n)| (ty, -n)),
-        Expr::Binary(op, a, b) => {
+        Expr::Unary(op, e, ..) if op == "-" => constant_number(e)?.map(|(ty, n)| (ty, -n)),
+        Expr::Binary(op, a, b, ..) => {
             let left = constant_number(a)?;
             if matches!(op.as_str(), "%+" | "%-")
                 && left.as_ref().is_some_and(|(_, base)| !(0.0..=100.0).contains(base))
@@ -211,7 +211,7 @@ pub(super) fn check_call_bounds(
         return Err("invalid built-in bounds interface".into());
     }
     let receiver = match super::overloads::callable_base(callee) {
-        Expr::Member { receiver, .. } | Expr::BoundReference(receiver, _) => receiver,
+        Expr::Member { receiver, .. } | Expr::BoundReference(receiver, ..) => receiver,
         _ => return Ok(()),
     };
     let mut constants = vec![None; signature.params.len()];

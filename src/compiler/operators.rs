@@ -52,6 +52,16 @@ pub(super) fn binary_type(op: &str, a: &Type, b: &Type) -> Result<Type, String> 
     if (op == "in" || op == "!in") && !b.permits_null() {
         let view = crate::generics::member_view(b);
         let b = &view;
+        if matches!(b, Type::Named { name, .. } if name == "IntRange" || name == "IntProgression") {
+            // A typed integer progression does not narrow a Float query. A
+            // generic query may use a proven non-null Int bound at its definition.
+            let query = crate::generics::operation_view(a);
+            return if !a.permits_null() && query == Type::Int {
+                Ok(Type::Boolean)
+            } else {
+                Err("integer range membership requires Int".into())
+            };
+        }
         let item = if let Some((_, args, _)) = b.collection() {
             Some(args[0].clone())
         } else {

@@ -28,6 +28,13 @@ pub(super) fn continues(tokens: &[Token], embedded: &[Expr]) -> bool {
     let Some(Token::Symbol(operator) | Token::Name(operator)) = tokens.last() else {
         return false;
     };
+    if operator == "step"
+        && tokens
+            .get(tokens.len().saturating_sub(2))
+            .is_some_and(|token| [".", "?.", "::"].iter().any(|separator| symbol(token, separator)))
+    {
+        return false;
+    }
     if precedence(operator).is_some() {
         return operator != ">" || !complete_tail(tokens, embedded);
     }
@@ -105,6 +112,22 @@ mod tests {
             assert!(!continues(&lex(source).unwrap(), &[]), "{source}");
         }
         for source in ["val result = value >", "if value >", "return value >", "value >"] {
+            assert!(continues(&lex(source).unwrap(), &[]), "{source}");
+        }
+    }
+
+    #[test]
+    fn progression_step_members_finish_while_infix_step_still_continues() {
+        for source in [
+            "value.step",
+            "value?.step",
+            "return value.step",
+            "val stepValue = value.step",
+            "value::step",
+        ] {
+            assert!(!continues(&lex(source).unwrap(), &[]), "{source}");
+        }
+        for source in ["value step", "return value step", "value.step +", "value.", "value?."] {
             assert!(continues(&lex(source).unwrap(), &[]), "{source}");
         }
     }

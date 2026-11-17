@@ -87,6 +87,13 @@ pub(crate) fn read(
     aggregate: Option<&mut u64>,
     started: Instant,
 ) -> Result<(StreamedModule, String), String> {
+    let buffer_limit = crate::input::BUFFERED_JSON_LIMIT.min(limit);
+    if std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() <= buffer_limit) {
+        let bytes = crate::input::bytes(path, buffer_limit)?;
+        crate::input::account(path, bytes.len() as u64, limit, aggregate)?;
+        return crate::input::json_seed_bytes_hashed(&bytes, limit, Seed::new(started))
+            .map_err(|error| format!("{}: {error}", path.display()));
+    }
     crate::input::json_seed_hashed(path, limit, aggregate, Seed::new(started))
 }
 

@@ -30,23 +30,34 @@ pub fn lex(text: &str) -> Result<Vec<Token>, String> {
     tokenize(text, false).map(|(tokens, _)| tokens)
 }
 
-/// Token start lines relative to the supplied text; unlocated callers allocate no line array.
-pub(crate) fn lex_lines(text: &str) -> Result<(Vec<Token>, Vec<usize>), String> {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TokenPosition {
+    pub line: usize,
+    pub indent: usize,
+}
+
+/// Token origins relative to the supplied text; unlocated callers allocate no location array.
+pub(crate) fn lex_lines(text: &str) -> Result<(Vec<Token>, Vec<TokenPosition>), String> {
     tokenize(text, true)
 }
 
-fn tokenize(text: &str, located: bool) -> Result<(Vec<Token>, Vec<usize>), String> {
+fn tokenize(text: &str, located: bool) -> Result<(Vec<Token>, Vec<TokenPosition>), String> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut lines = Vec::new();
     let mut line = 0;
+    let mut line_start = 0;
+    let mut cached_indent = (None, 0);
     let mut offset = 0;
     while offset < bytes.len() {
         // Normal scanning always starts on a scalar boundary. ASCII token
         // scanners and the literal balancer return another such boundary.
         let character = text[offset..].chars().next().unwrap();
         if character.is_whitespace() {
-            line += usize::from(character == '\n');
+            if character == '\n' {
+                line += 1;
+                line_start = offset + 1;
+            }
             offset += character.len_utf8();
             continue;
         }
@@ -57,6 +68,14 @@ fn tokenize(text: &str, located: bool) -> Result<(Vec<Token>, Vec<usize>), Strin
             continue;
         }
         let token_line = line;
+        let token_indent = if located {
+            if cached_indent.0 != Some(line) {
+                cached_indent = (Some(line), indentation(&text[line_start..]).0);
+            }
+            cached_indent.1
+        } else {
+            0
+        };
         if character.is_ascii_alphabetic() || character == '_' {
             let start = offset;
             offset += 1;
@@ -84,6 +103,9 @@ fn tokenize(text: &str, located: bool) -> Result<(Vec<Token>, Vec<usize>), Strin
                 Token::Text(if triple { dedent(raw) } else { raw.into() })
             });
             if located {
+                if let Some(newline) = bytes[offset..literal.next].iter().rposition(|byte| *byte == b'\n') {
+                    line_start = offset + newline + 1;
+                }
                 line += bytes[offset..literal.next]
                     .iter()
                     .filter(|byte| **byte == b'\n')
@@ -116,7 +138,10 @@ fn tokenize(text: &str, located: bool) -> Result<(Vec<Token>, Vec<usize>), Strin
             }
         }
         if located {
-            lines.push(token_line);
+            lines.push(TokenPosition {
+                line: token_line,
+                indent: token_indent,
+            });
         }
         if out.len() > 4096 {
             return Err("line token budget exceeded".into());

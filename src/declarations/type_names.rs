@@ -38,13 +38,16 @@ impl Scope {
     }
 
     pub(super) fn contains_key(&self, name: &str) -> bool {
-        self.get(name).is_some()
+        builtin(name) || self.get(name).is_some()
     }
 
     /// Return any visible old binding so callers retain their shadowing checks.
     /// A retained parent is never modified by a child's insertion.
     pub(super) fn insert(&mut self, name: String, value: String) -> Option<String> {
-        let previous = self.get(&name).cloned();
+        let previous = self
+            .get(&name)
+            .cloned()
+            .or_else(|| builtin(&name).then(|| name.clone()));
         Arc::make_mut(&mut self.frame).bindings.insert(name, value);
         previous
     }
@@ -57,4 +60,32 @@ impl Scope {
         std::iter::successors(Some(self.frame.as_ref()), |frame| frame.parent.as_deref())
             .flat_map(|frame| frame.bindings.values())
     }
+}
+
+// Builtins participate in type-name collisions without becoming module-prefix
+// aliases in Scope::values. Value bindings use a separate namespace.
+fn builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "Int"
+            | "Float"
+            | "Boolean"
+            | "String"
+            | "Char"
+            | "Unit"
+            | "Nothing"
+            | "Any"
+            | "Scene"
+            | "List"
+            | "Set"
+            | "Map"
+            | "MutableList"
+            | "MutableSet"
+            | "MutableMap"
+            | "Entry"
+            | "IntRange"
+            | "IntProgression"
+            | "Equatable"
+            | "StableKey"
+    )
 }

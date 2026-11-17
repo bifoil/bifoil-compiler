@@ -91,10 +91,21 @@ pub(crate) fn discover(
     started: Instant,
 ) -> Result<BTreeMap<String, Arc<FunctionSummary>>, String> {
     let own_summaries = summarize(own_functions, own_shared, modules, started)?;
-    // Callers still need these summaries even when this module has no shared
-    // initializers. Only dependency resolution can be skipped in that case.
+    resolve_module(own_functions, own_shared, &own_summaries, modules, started)?;
+    Ok(own_summaries)
+}
+
+/// Resolve already-computed own summaries against complete dependency metadata.
+/// Cyclic components can stream their bodies once before this metadata-only pass.
+pub(crate) fn resolve_module(
+    own_functions: &BTreeMap<String, Function>,
+    own_shared: &mut BTreeMap<String, SharedDef>,
+    own_summaries: &BTreeMap<String, Arc<FunctionSummary>>,
+    modules: &crate::model::ModuleView<'_>,
+    started: Instant,
+) -> Result<(), String> {
     if own_shared.is_empty() {
-        return Ok(own_summaries);
+        return Ok(());
     }
     let mut summaries = BTreeMap::new();
     let mut initializer_ids = BTreeSet::new();
@@ -117,8 +128,7 @@ pub(crate) fn discover(
         .values()
         .flat_map(|module| module.functions.values())
         .chain(own_functions.values());
-    resolve(own_shared, &initializer_ids, functions, &summaries, started)?;
-    Ok(own_summaries)
+    resolve(own_shared, &initializer_ids, functions, &summaries, started)
 }
 
 /// Revisit raw summaries with the final ordinary-function candidate set. Unknown

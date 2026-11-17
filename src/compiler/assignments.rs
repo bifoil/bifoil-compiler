@@ -180,6 +180,7 @@ impl Compiler {
         context: &mut FunctionContext,
         line: usize,
     ) -> Result<(), String> {
+        let target_line = target.operation_line(line);
         let target_type = self.address(target, context, line)?;
         let actual = if operator == "=" {
             self.expression_as(value, context, line, Some(&target_type))?
@@ -187,7 +188,7 @@ impl Compiler {
             // Address evaluation may already have effects. Retain this read's
             // type before the RHS can mutate the source or invalidate its facts.
             let read_type = infer(target, &context.scopes)?;
-            context.emit(Op::ReadAddress, line);
+            context.emit(Op::ReadAddress, target_line);
             let rhs = self.expression(value, context, line)?;
             let op = &operator[..operator.len() - 1];
             let result = binary_type(op, &read_type, &rhs)?;
@@ -203,7 +204,7 @@ impl Compiler {
                 &mut self.empty_dependencies,
             )?;
         }
-        context.emit(Op::WriteAddress, line);
+        context.emit(Op::WriteAddress, target_line);
         if context.is_reachable {
             // A field or collection write can change a guarded field through a
             // different alias. Immutable paths keep their independent proofs.

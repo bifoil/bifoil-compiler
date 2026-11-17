@@ -10,7 +10,7 @@ use std::time::Instant;
 /// Publish resolved declarations before any instruction bodies are lowered.
 /// Pending returns remain internal to the fixed-point pass and are never serialized.
 pub(crate) fn interface(
-    ast: &Ast,
+    ast: Ast,
     name: &str,
     file: &str,
     deps: &crate::model::ModuleView<'_>,
@@ -24,7 +24,7 @@ pub(crate) fn interface(
         legacy_globals,
         mut exports,
         dependencies,
-    } = prepare(ast.clone(), name, file, deps, started)?;
+    } = prepare(ast, name, file, deps, started)?;
     let mut functions = BTreeMap::new();
     for (index, fun) in ast.functions.iter().enumerate() {
         let sig = lookup(&env, &fun.name).unwrap().signature_by_id(&function_ids[index]);
@@ -78,6 +78,7 @@ pub(crate) fn interface(
 /// Only names and directly written signatures are needed to start interface resolution.
 /// All types are normalized and all bodies checked before these placeholders can escape.
 pub(crate) fn seed(ast: &Ast, name: &str) -> Result<Module, String> {
+    super::validate_export_names(ast)?;
     let mut exports = BTreeMap::new();
     let mut functions = BTreeMap::new();
     let identities = function_ids(ast, name);
@@ -164,12 +165,12 @@ pub(crate) fn seed(ast: &Ast, name: &str) -> Result<Module, String> {
 /// Resolve nominal names, generated signatures, aliases and generic parameter IDs
 /// before lexical insertion attempts to validate imported declaration types.
 pub(crate) fn declaration_interface(
-    ast: &Ast,
+    ast: Ast,
     name: &str,
     deps: &crate::model::ModuleView<'_>,
 ) -> Result<Module, String> {
     let _analysis_session = crate::declarations::AnalysisSession::enter();
-    let (prepared, _) = crate::declarations::prepare(ast.clone(), name, deps)?;
+    let (prepared, _) = crate::declarations::prepare_interface(ast, name, deps)?;
     let mut module = seed(&prepared, name)?;
     module.types = crate::declarations::owned_types(&prepared, name);
     Ok(module)

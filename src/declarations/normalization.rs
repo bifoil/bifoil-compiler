@@ -24,6 +24,7 @@ pub(super) fn normalize_expression(e: &mut Expr, names: &Scope, members: &BTreeS
                 receiver: Box::new(Expr::Name("this".into())),
                 name: n.clone(),
                 safe: false,
+                line: 0,
             }
         }
         Expr::Construct { ty, fields, .. } => {
@@ -40,10 +41,12 @@ pub(super) fn normalize_expression(e: &mut Expr, names: &Scope, members: &BTreeS
         }
         Expr::Lambda(f) => normalize_function(f, names, members)?,
         Expr::Block(b) => normalize_block(b, names, members)?,
-        Expr::Group(e) | Expr::Unary(_, e) | Expr::Unwrap(e) | Expr::Spread(e) | Expr::BoundReference(e, _) => {
-            normalize_expression(e, names, members)?
-        }
-        Expr::Binary(_, a, b)
+        Expr::Group(e)
+        | Expr::Unary(_, e, ..)
+        | Expr::Unwrap(e, ..)
+        | Expr::Spread(e)
+        | Expr::BoundReference(e, ..) => normalize_expression(e, names, members)?,
+        Expr::Binary(_, a, b, ..)
         | Expr::Index {
             receiver: a, index: b, ..
         } => {
@@ -55,7 +58,7 @@ pub(super) fn normalize_expression(e: &mut Expr, names: &Scope, members: &BTreeS
             normalize_expression(value, names, members)?;
             resolve_type(ty, names)?
         }
-        Expr::Call(c, args) | Expr::SafeCall(c, args) => {
+        Expr::Call(c, args, ..) | Expr::SafeCall(c, args, ..) => {
             normalize_expression(c, names, members)?;
             for (_, e) in args {
                 normalize_expression(e, names, members)?
@@ -144,6 +147,7 @@ pub(super) fn normalize_block(b: &mut [Statement], names: &Scope, members: &BTre
                             receiver: Box::new(Expr::Name("this".into())),
                             name: name.clone(),
                             safe: false,
+                            line: 0,
                         },
                         operator: operator.clone(),
                         value: value.clone(),

@@ -11,7 +11,12 @@ import shutil
 from pathlib import Path
 
 from process_measurement import measure
-from workload_source import nominal_consumer_sources, nominal_import_sources, program_source, shared_import_sources
+from workload_source import (
+    nominal_consumer_sources,
+    nominal_import_sources,
+    program_source,
+    shared_import_sources,
+)
 
 
 def checksum(path):
@@ -22,8 +27,16 @@ def checksum(path):
 arguments = argparse.ArgumentParser(description=__doc__)
 arguments.add_argument("compiler", type=Path)
 arguments.add_argument("output_directory", type=Path)
-arguments.add_argument("--workload", choices=["functions", "nominal-import", "shared-import", "nominal-consumer"], default="functions")
-arguments.add_argument("--keep-original", action="store_true", help="retain the clean program for independent execution")
+arguments.add_argument(
+    "--workload",
+    choices=["functions", "nominal-import", "shared-import", "nominal-consumer"],
+    default="functions",
+)
+arguments.add_argument(
+    "--keep-original",
+    action="store_true",
+    help="retain the clean program for independent execution",
+)
 options = arguments.parse_args()
 root = options.output_directory.resolve()
 root.mkdir(parents=True, exist_ok=False)
@@ -31,7 +44,9 @@ root.mkdir(parents=True, exist_ok=False)
 (root / "bifoil.toml").write_text('entry = "main.start"\n')
 if options.workload == "nominal-consumer":
     helpers, entry = nominal_consumer_sources()
-    functions = 1029  # Local methods/constructor/copy/scene and two shared-state functions.
+    functions = (
+        1029  # Local methods/constructor/copy/scene and two shared-state functions.
+    )
 elif options.workload == "shared-import":
     helpers, entry = shared_import_sources()
     functions = 4093  # 4,090 initializers, a bootstrap, a reader, and the scene.
@@ -41,7 +56,9 @@ elif options.workload == "nominal-import":
 else:
     helpers = "export " + program_source("functions").split("scene start():", 1)[0]
     assert helpers.count("fun f") == 4095
-    entry = 'import helpers.f0000\nscene start():\n    prose:\n        ${f0000(0)}|END\n'
+    entry = (
+        "import helpers.f0000\nscene start():\n    prose:\n        ${f0000(0)}|END\n"
+    )
     functions = 4096
 dependency = root / "src/helpers.bfl"
 dependency.write_text(helpers)
@@ -67,11 +84,15 @@ edit_name = "dependency_edit" if dependency_edit else "scene_edit"
 for name in ["clean", "populate", "unchanged", edit_name]:
     if name == edit_name:
         if dependency_edit:
-            dependency.write_text(dependency.read_text().replace("Int = 0", "Int = 1", 1))
+            dependency.write_text(
+                dependency.read_text().replace("Int = 0", "Int = 1", 1)
+            )
         else:
             scene.write_text(scene.read_text().replace("|END", "|FIN", 1))
     result = measure([*command, "--clean"] if name == "clean" else command)
-    result["source_sha256"] = {path.name: checksum(path) for path in sorted((root / "src").glob("*.bfl"))}
+    result["source_sha256"] = {
+        path.name: checksum(path) for path in sorted((root / "src").glob("*.bfl"))
+    }
     if result["status"] == 0:
         result["program_sha256"] = checksum(output)
         if options.keep_original and name == "clean":
@@ -89,7 +110,10 @@ for name, result in report["runs"].items():
     if name in ["unchanged", edit_name] and result["wall_seconds"] >= 10:
         raise SystemExit("incremental build exceeded ten seconds")
 expected = report["runs"]["clean"]["program_sha256"]
-if any(report["runs"][name]["program_sha256"] != expected for name in ["populate", "unchanged"]):
+if any(
+    report["runs"][name]["program_sha256"] != expected
+    for name in ["populate", "unchanged"]
+):
     raise SystemExit("source population or unchanged reuse changed program bytes")
 if report["runs"][edit_name]["program_sha256"] == expected:
     raise SystemExit("the edited scene did not change program bytes")

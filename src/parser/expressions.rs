@@ -1,11 +1,11 @@
 //! Expression grammar, operator binding, calls, and anonymous functions.
 
-use super::{Cursor, template};
+use super::{Cursor, ParseError, template};
 use crate::lexer::{Token, name, symbol};
 use crate::syntax::{Expr, FunctionAst, Parameter, Statement, StatementKind};
 
 impl Cursor {
-    pub(super) fn arguments(&mut self, depth: usize) -> Result<Vec<(Option<String>, Expr)>, String> {
+    pub(super) fn arguments(&mut self, depth: usize) -> Result<Vec<(Option<String>, Expr)>, ParseError> {
         let mut args = vec![];
         if self.sym(")") {
             return Ok(args);
@@ -35,7 +35,7 @@ impl Cursor {
         Ok(args)
     }
 
-    pub(super) fn lambda(&mut self, suspend: bool, depth: usize) -> Result<Expr, String> {
+    pub(super) fn lambda(&mut self, suspend: bool, depth: usize) -> Result<Expr, ParseError> {
         let line = self.line();
         self.need("(")?;
         let mut params = vec![];
@@ -83,6 +83,7 @@ impl Cursor {
             vec![]
         };
         Ok(Expr::Lambda(Box::new(FunctionAst {
+            prose_body: false,
             legacy: None,
             generics: vec![],
             name: "$lambda".into(),
@@ -97,18 +98,24 @@ impl Cursor {
         })))
     }
 
-    pub(super) fn expr(&mut self, min: u8, depth: usize) -> Result<Expr, String> {
+    pub(super) fn expr(&mut self, min: u8, depth: usize) -> Result<Expr, ParseError> {
+        self.parse_expr(min, depth.max(self.expression_depth))
+            .map_err(|error| self.error(error))
+    }
+
+    fn parse_expr(&mut self, min: u8, depth: usize) -> Result<Expr, ParseError> {
         if depth > 64 {
             return Err("expression nesting budget exceeded".into());
         }
+        let prefix_line = self.line();
         let lambda_start = self.starts_lambda();
         let mut left = if lambda_start {
             let suspend = self.kw("suspend");
             self.lambda(suspend, depth)?
         } else if self.sym("-") {
-            Expr::Unary("-".into(), Box::new(self.expr(11, depth + 1)?))
+            Expr::Unary("-".into(), Box::new(self.expr(11, depth + 1)?), prefix_line)
         } else if self.sym("!") {
-            Expr::Unary("!".into(), Box::new(self.expr(11, depth + 1)?))
+            Expr::Unary("!".into(), Box::new(self.expr(11, depth + 1)?), prefix_line)
         } else if self.sym("::") {
             Expr::Reference(self.ident()?)
         } else if self.kw("return") {
@@ -227,13 +234,15 @@ impl Cursor {
                 }
                 Some(Token::Text(raw)) => {
                     let line = self.line();
+                    let indent = self.indent();
                     self.position += 1;
-                    template(&raw, depth + 1, line)?
+                    template(&raw, depth + 1, line, indent)?
                 }
                 Some(Token::Character(raw)) => {
                     let line = self.line();
+                    let indent = self.indent();
                     self.position += 1;
-                    let Expr::String(text) = template(&raw, depth + 1, line)? else {
+                    let Expr::String(text) = template(&raw, depth + 1, line, indent)? else {
                         return Err("Char cannot interpolate".into());
                     };
                     if text.chars().count() != 1 {
@@ -258,6 +267,7 @@ impl Cursor {
             // Waiting until the end could build an arbitrarily deep postfix or
             // left-associated tree even though recursive parsing itself is bounded.
             expression_depth(&left)?;
+            let operation_line = self.line();
             if self.tokens.get(self.position).is_some_and(|t| symbol(t, "<")) {
                 let mut probe = self.clone();
                 probe.position += 1;
@@ -293,20 +303,21 @@ impl Cursor {
                 let safe = matches!(&left, Expr::Member { safe: true, .. });
                 let args = self.arguments(depth)?;
                 left = if safe {
-                    Expr::SafeCall(Box::new(left), args)
+                    Expr::SafeCall(Box::new(left), args, operation_line)
                 } else {
-                    Expr::Call(Box::new(left), args)
+                    Expr::Call(Box::new(left), args, operation_line)
                 };
                 continue;
             }
             if self.sym("?.") {
                 if self.sym("(") {
-                    left = Expr::SafeCall(Box::new(left), self.arguments(depth)?);
+                    left = Expr::SafeCall(Box::new(left), self.arguments(depth)?, operation_line);
                 } else {
                     left = Expr::Member {
                         receiver: Box::new(left),
-                        name: self.ident()?,
+                        name: self.member_name()?,
                         safe: true,
+                        line: operation_line,
                     };
                 }
                 continue;
@@ -314,13 +325,14 @@ impl Cursor {
             if self.sym(".") {
                 left = Expr::Member {
                     receiver: Box::new(left),
-                    name: self.ident()?,
+                    name: self.member_name()?,
                     safe: false,
+                    line: operation_line,
                 };
                 continue;
             }
             if self.sym("::") {
-                left = Expr::BoundReference(Box::new(left), self.ident()?);
+                left = Expr::BoundReference(Box::new(left), self.member_name()?, operation_line);
                 continue;
             }
             if self.sym("[") || self.sym("?[") {
@@ -334,11 +346,12 @@ impl Cursor {
                     receiver: Box::new(left),
                     index: Box::new(index),
                     safe,
+                    line: operation_line,
                 };
                 continue;
             }
             if self.sym("!!") {
-                left = Expr::Unwrap(Box::new(left));
+                left = Expr::Unwrap(Box::new(left), operation_line);
                 continue;
             }
             let op = match self.tokens.get(self.position) {
@@ -359,34 +372,37 @@ impl Cursor {
                     value: Box::new(left),
                     operator: op,
                     ty: self.ty()?,
+                    line: operation_line,
                 };
                 continue;
             }
             let right = self.expr(if op == "?:" { precedence } else { precedence + 1 }, depth + 1)?;
-            let fair = |e: &Expr| matches!(e,Expr::Binary(o,_,_) if o=="%+"||o=="%-");
+            let fair = |e: &Expr| matches!(e,Expr::Binary(o,_,_,_) if o=="%+"||o=="%-");
             if ((op == "%+" || op == "%-") && (matches!(left, Expr::Binary(..)) || matches!(right, Expr::Binary(..))))
                 || fair(&left)
                 || fair(&right)
             {
                 return Err("fairmath combinations require explicit parentheses".into());
             }
-            left = Expr::Binary(op, Box::new(left), Box::new(right));
+            left = Expr::Binary(op, Box::new(left), Box::new(right), operation_line);
         }
         expression_depth(&left)?;
         Ok(left)
     }
 }
 
-pub(super) fn expression_depth(expr: &Expr) -> Result<(), String> {
+pub(super) fn expression_depth(expr: &Expr) -> Result<(), ParseError> {
     let mut pending = vec![(expr, 0)];
     while let Some((expr, depth)) = pending.pop() {
         if depth > 64 {
             return Err("expression tree budget exceeded".into());
         }
         match expr {
-            Expr::Group(e) | Expr::Unary(_, e) | Expr::Unwrap(e) | Expr::Spread(e) | Expr::BoundReference(e, _) => {
-                pending.push((e, depth + 1))
-            }
+            Expr::Group(e)
+            | Expr::Unary(_, e, ..)
+            | Expr::Unwrap(e, ..)
+            | Expr::Spread(e)
+            | Expr::BoundReference(e, ..) => pending.push((e, depth + 1)),
             Expr::Member { receiver, .. } => pending.push((receiver, depth + 1)),
             Expr::Index { receiver, index, .. } => {
                 pending.push((receiver, depth + 1));
@@ -402,11 +418,11 @@ pub(super) fn expression_depth(expr: &Expr) -> Result<(), String> {
                 }
             }
             Expr::Transfer { value: Some(e), .. } => pending.push((e, depth + 1)),
-            Expr::Binary(_, a, b) => {
+            Expr::Binary(_, a, b, ..) => {
                 pending.push((a, depth + 1));
                 pending.push((b, depth + 1));
             }
-            Expr::Call(e, args) | Expr::SafeCall(e, args) => {
+            Expr::Call(e, args, ..) | Expr::SafeCall(e, args, ..) => {
                 pending.push((e, depth + 1));
                 pending.extend(args.iter().map(|(_, e)| (e, depth + 1)));
             }

@@ -17,7 +17,7 @@ pub(in crate::compiler) fn statement_names(statement: &Statement) -> BTreeSet<St
     }
     let mut bound = BTreeSet::new();
     let mut used = Requirements::new();
-    capture_body(std::slice::from_ref(statement), &mut bound, &mut used);
+    capture_body(std::slice::from_ref(statement), &mut bound, &mut used, false);
     remove_bound(&mut used, &bound);
     used.into_iter().map(|required| required.name().to_owned()).collect()
 }
@@ -25,7 +25,7 @@ pub(in crate::compiler) fn statement_names(statement: &Statement) -> BTreeSet<St
 /// Free names in code that shares a body's scope, such as a do/while condition.
 pub(in crate::compiler) fn expression_names(value: &Expr) -> BTreeSet<String> {
     let mut used = Requirements::new();
-    capture_expression(value, &mut used);
+    capture_expression(value, &mut used, false);
     used.into_iter().map(|required| required.name().to_owned()).collect()
 }
 
@@ -43,8 +43,19 @@ pub(in crate::compiler) fn assigned_names(fun: &FunctionAst) -> BTreeSet<String>
 }
 
 pub(in crate::compiler) fn callable_captures(fun: &FunctionAst) -> CallableRequirements {
-    let mut captures = requirements_only(fun);
-    captures.publications = super::publication_names::body(&fun.body, &captures.body);
+    callable_requirements(fun, false)
+}
+
+/// Unit-context lambdas discard their return values. Creating and discarding a
+/// closure retains no callable result and does not read that closure's captures.
+/// Runtime capture discovery still uses the original, complete lexical summary.
+pub(in crate::compiler) fn lambda_captures(fun: &FunctionAst) -> CallableRequirements {
+    callable_requirements(fun, fun.result == Some(crate::model::Type::Unit))
+}
+
+fn callable_requirements(fun: &FunctionAst, discard_returns: bool) -> CallableRequirements {
+    let mut captures = requirements_with_discard(fun, discard_returns);
+    captures.publications = super::publication_names::body(&fun.body, &captures.body, discard_returns);
     for (index, parameter) in fun.params.iter().enumerate() {
         if let Some(value) = &parameter.default {
             captures.default_publications.insert(
@@ -59,16 +70,20 @@ pub(in crate::compiler) fn callable_captures(fun: &FunctionAst) -> CallableRequi
 /// Nested closure discovery needs only free names, not another recursive pass
 /// over publication effects. Keep the two queries separate to bound traversal.
 pub(super) fn requirements_only(fun: &FunctionAst) -> CallableRequirements {
+    requirements_with_discard(fun, false)
+}
+
+fn requirements_with_discard(fun: &FunctionAst, discard_returns: bool) -> CallableRequirements {
     let parameters = fun.params.iter().map(|p| p.name.clone()).collect::<BTreeSet<_>>();
     let mut bound = parameters.clone();
     let mut body = BTreeSet::new();
-    capture_body(&fun.body, &mut bound, &mut body);
+    capture_body(&fun.body, &mut bound, &mut body, discard_returns);
     remove_bound(&mut body, &bound);
     let mut defaults = BTreeMap::new();
     for (index, parameter) in fun.params.iter().enumerate() {
         if let Some(value) = &parameter.default {
             let mut names = BTreeSet::new();
-            capture_expression(value, &mut names);
+            capture_expression(value, &mut names, false);
             remove_bound(&mut names, &parameters);
             defaults.insert(index, names);
         }
@@ -141,12 +156,12 @@ fn remove_bound(used: &mut Requirements, bound: &BTreeSet<String>) {
     used.retain(|required| !bound.contains(required.name().split('.').next().unwrap()));
 }
 
-fn capture_expression(e: &Expr, used: &mut Requirements) {
+fn capture_expression(e: &Expr, used: &mut Requirements, discard_returns: bool) {
     match e {
         Expr::Block(part) => {
             let mut bound = BTreeSet::new();
             let mut local = BTreeSet::new();
-            capture_body(part, &mut bound, &mut local);
+            capture_body(part, &mut bound, &mut local, discard_returns);
             remove_bound(&mut local, &bound);
             used.extend(local);
         }
@@ -156,59 +171,74 @@ fn capture_expression(e: &Expr, used: &mut Requirements) {
                 used.insert(Requirement::Binding(n.clone()));
             }
         }
-        Expr::Group(e) | Expr::Unary(_, e) | Expr::Unwrap(e) | Expr::Spread(e) | Expr::BoundReference(e, _) => {
-            capture_expression(e, used)
-        }
-        Expr::TypeApply { callee, .. } => capture_expression(callee, used),
+        Expr::Group(e)
+        | Expr::Unary(_, e, ..)
+        | Expr::Unwrap(e, ..)
+        | Expr::Spread(e)
+        | Expr::BoundReference(e, ..) => capture_expression(e, used, discard_returns),
+        Expr::TypeApply { callee, .. } => capture_expression(callee, used, discard_returns),
         Expr::Construct { fields, .. } => {
             for (_, value) in fields {
-                capture_expression(value, used);
+                capture_expression(value, used, discard_returns);
             }
         }
         Expr::Member { receiver, .. } => {
             if let Some(path) = super::super::expression_path(e) {
                 used.insert(Requirement::Binding(path));
             } else {
-                capture_expression(receiver, used);
+                capture_expression(receiver, used, discard_returns);
             }
         }
-        Expr::TypeOp { value, .. } => capture_expression(value, used),
-        Expr::Index { receiver, index, .. } | Expr::Binary(_, receiver, index) => {
-            capture_expression(receiver, used);
-            capture_expression(index, used);
+        Expr::TypeOp { value, .. } => capture_expression(value, used, discard_returns),
+        Expr::Index { receiver, index, .. } | Expr::Binary(_, receiver, index, ..) => {
+            capture_expression(receiver, used, discard_returns);
+            capture_expression(index, used, discard_returns);
         }
-        Expr::Call(e, args) | Expr::SafeCall(e, args) => {
+        Expr::Call(e, args, ..) | Expr::SafeCall(e, args, ..) => {
             if let Some(call) = Requirement::call(e, args) {
                 used.insert(call);
             } else {
-                capture_expression(e, used);
+                capture_expression(e, used, discard_returns);
             }
             for (_, e) in args {
-                capture_expression(e, used)
+                capture_expression(e, used, discard_returns)
             }
         }
         Expr::Collection { entries, .. } => {
             for (key, value) in entries {
                 if let Some(key) = key {
-                    capture_expression(key, used)
+                    capture_expression(key, used, discard_returns)
                 }
-                capture_expression(value, used)
+                capture_expression(value, used, discard_returns)
             }
         }
-        Expr::Transfer { value: Some(e), .. } => capture_expression(e, used),
+        Expr::Transfer {
+            kind, value: Some(e), ..
+        } => {
+            if !discard_returns || kind != "return" || !discarded_closure(e) {
+                capture_expression(e, used, discard_returns);
+            }
+        }
         Expr::Format(parts) => {
             for part in parts {
-                capture_expression(&part.value, used)
+                capture_expression(&part.value, used, discard_returns)
             }
         }
         _ => {}
     }
 }
-fn capture_body(statements: &[Statement], bound: &mut BTreeSet<String>, used: &mut Requirements) {
+fn capture_body(
+    statements: &[Statement],
+    bound: &mut BTreeSet<String>,
+    used: &mut Requirements,
+    discard_returns: bool,
+) {
     for s in statements {
         match &s.kind {
-            StatementKind::Narrative(part) => capture_body(part, bound, used),
-            StatementKind::Text(value) | StatementKind::Yield { value, .. } => capture_expression(value, used),
+            StatementKind::Narrative(part) => capture_body(part, bound, used, discard_returns),
+            StatementKind::Text(value) | StatementKind::Yield { value, .. } => {
+                capture_expression(value, used, discard_returns)
+            }
             StatementKind::ParagraphBreak => {}
             StatementKind::When {
                 subject,
@@ -217,7 +247,7 @@ fn capture_body(statements: &[Statement], bound: &mut BTreeSet<String>, used: &m
                 ..
             } => {
                 if let Some(subject) = subject {
-                    capture_expression(subject, used)
+                    capture_expression(subject, used, discard_returns)
                 }
                 if let Some(binding) = binding {
                     bound.insert(binding.clone());
@@ -225,7 +255,9 @@ fn capture_body(statements: &[Statement], bound: &mut BTreeSet<String>, used: &m
                 for case in cases {
                     for pattern in &case.patterns {
                         match pattern {
-                            Pattern::Value(e) | Pattern::Membership { value: e, .. } => capture_expression(e, used),
+                            Pattern::Value(e) | Pattern::Membership { value: e, .. } => {
+                                capture_expression(e, used, discard_returns)
+                            }
                             Pattern::Type {
                                 bindings: Some(names), ..
                             } => {
@@ -239,14 +271,18 @@ fn capture_body(statements: &[Statement], bound: &mut BTreeSet<String>, used: &m
                         }
                     }
                     if let Some(guard) = &case.guard {
-                        capture_expression(guard, used)
+                        capture_expression(guard, used, discard_returns)
                     }
-                    capture_body(&case.body, bound, used);
+                    capture_body(&case.body, bound, used, discard_returns);
                 }
             }
-            StatementKind::Variable { name, value, .. } => {
+            StatementKind::Variable {
+                name, value, shared, ..
+            } => {
                 bound.insert(name.clone());
-                capture_expression(value, used);
+                if !shared {
+                    capture_expression(value, used, discard_returns);
+                }
             }
             StatementKind::Uninitialized { name, .. } => {
                 bound.insert(name.clone());
@@ -257,23 +293,27 @@ fn capture_body(statements: &[Statement], bound: &mut BTreeSet<String>, used: &m
                 } else {
                     Requirement::Binding(name.clone())
                 });
-                capture_expression(value, used);
+                capture_expression(value, used, discard_returns);
             }
             StatementKind::Write { target, value, .. } => {
-                capture_expression(target, used);
-                capture_expression(value, used);
+                capture_expression(target, used, discard_returns);
+                capture_expression(value, used, discard_returns);
             }
-            StatementKind::Expression(e) | StatementKind::Return(Some(e)) => capture_expression(e, used),
+            StatementKind::Expression(e) | StatementKind::Return(Some(e)) => {
+                if !discard_returns || !discarded_closure(e) {
+                    capture_expression(e, used, discard_returns);
+                }
+            }
             StatementKind::Function(f) => {
                 bound.insert(f.name.clone());
                 used.extend(requirements_only(f).all_requirements());
             }
             StatementKind::If { branches, no } => {
                 for branch in branches {
-                    capture_expression(&branch.condition, used);
-                    capture_body(&branch.body, bound, used);
+                    capture_expression(&branch.condition, used, discard_returns);
+                    capture_body(&branch.body, bound, used, discard_returns);
                 }
-                capture_body(no, bound, used);
+                capture_body(no, bound, used, discard_returns);
             }
             StatementKind::For {
                 name,
@@ -282,28 +322,39 @@ fn capture_body(statements: &[Statement], bound: &mut BTreeSet<String>, used: &m
                 ..
             } => {
                 bound.insert(name.clone());
-                capture_expression(iterable, used);
-                capture_body(part, bound, used);
+                capture_expression(iterable, used, discard_returns);
+                capture_body(part, bound, used, discard_returns);
             }
             StatementKind::While {
                 condition, body: part, ..
             } => {
-                capture_expression(condition, used);
-                capture_body(part, bound, used);
+                capture_expression(condition, used, discard_returns);
+                capture_body(part, bound, used, discard_returns);
             }
             StatementKind::Choice { options, fallback } => {
                 for o in options {
-                    capture_expression(&o.visible, used);
-                    capture_expression(&o.enabled, used);
-                    capture_expression(&o.label, used);
-                    capture_body(&o.body, bound, used)
+                    capture_expression(&o.visible, used, discard_returns);
+                    capture_expression(&o.enabled, used, discard_returns);
+                    capture_expression(&o.label, used, discard_returns);
+                    capture_body(&o.body, bound, used, discard_returns)
                 }
                 if let Some(part) = fallback {
-                    capture_body(part, bound, used)
+                    capture_body(part, bound, used, discard_returns)
                 }
             }
             StatementKind::Alias(_) => {}
-            StatementKind::Return(None) => {}
+            StatementKind::Return(None) | StatementKind::ImplicitReturn => {}
         }
+    }
+}
+
+/// Only closure creation itself is inert. Calls, constructors, and other
+/// expressions may publish values while evaluating, even if their result is
+/// discarded, so they keep their ordinary capture/publication obligations.
+pub(super) fn discarded_closure(value: &Expr) -> bool {
+    match value {
+        Expr::Group(value) => discarded_closure(value),
+        Expr::Lambda(_) => true,
+        _ => false,
     }
 }

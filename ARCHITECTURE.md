@@ -10,38 +10,125 @@ query-local memo; empty argument maps still normalize nullable application. Decl
 method bodies into lowering after retaining their checked signatures in the type catalog.
 
 Final source compilation takes ownership of the parsed AST and normalizes it in place. The loader keeps source paths and
-content hashes for validation/publication, while transferring the active AST into lowering. Cyclic declaration and
-interface passes explicitly clone their borrowed source views until convergence; final member lowering consumes each
-source AST after import-scope construction. This separates reusable interface analysis from the one-time body pass.
+content hashes for validation/publication. Each cyclic declaration/interface pass rereads, hash-checks, and consumes
+only its active module's AST; sibling ASTs are not retained between passes. Final member lowering uses the same owned
+input after import-scope construction. Interface convergence retains declaration metadata separately from source ASTs.
+
+Component fingerprinting and final dependency stamping visit actual dependency edges, using a member-name set rather
+than probing every member pair. Canonical group hashes still exclude internal dependency hashes and include external
+digests and every member's content. Existing cyclic artifacts retain their group membership representation.
+
+Cyclic lowering spools each member's bodies before compiling its successor. Cached component validation hashes stored
+functions without restoring the whole component. Initialization summaries inspect one checked body at a time; dependency
+resolution then uses headers and summaries only. `src/code_store/module_view.rs` moves metadata through the existing
+canonical serializer and returns the checked headers on success or failure. Cache publication uses that stored view and
+the atomic writer's whole-file checksum. Declaration/type/dependency metadata still needs separate paging for the full
+target-scale resource contract.
+
+Cyclic component identities use shared immutable ownership. Source compilation creates one member list and digest for
+the component. The loader interns independently decoded groups only after canonical module validation and only when both
+membership and fingerprint agree. Conflicting lists remain distinct for normal rejection. Weak index entries refer to
+the enclosing group, allowing its member vector and strings to be released with the last live module. Component reuse
+compares the actual member set once and then checks shared identities and edge digests. Public module JSON retains the
+same fields and canonical bytes; repeated membership in serialized artifacts remains a separate scaling limitation.
+src/loader/memberships.rs owns this storage policy.
 
 ## Ordered checking and artifact compatibility
 
-Expression lowering retains the type of each evaluated operand and checks the operator against those captured types.
-A later effect cannot change the value already on the stack, while a subsequent read must use the current proof state.
+Expression lowering retains the type of each evaluated operand and checks the operator against those captured types. A
+later effect cannot change the value already on the stack, while a subsequent read must use the current proof state.
 Non-emitting applicability, generic inference, and binary inference reuse return analysis's normal-completion walker;
 only facts surviving a normally completed earlier expression reach the next one. Function return inference shares
 nonempty iterable evidence and actual loop exit joins with lowering.
 
-Generic bounds are semantically validated after nominal interfaces are installed. Equality-based collection methods
-use the same element/key eligibility query as operators. Loaded module graphs check callable/storage collisions before
+`src/compiler/overloads/callbacks.rs` owns deferred supplied-argument constraints. Each unresolved expression keeps its
+source-order scope snapshot; propagation revisits later-informed references without emitting or replaying code. Known
+function shapes check every visible candidate, and only shared type facts propagate. Generic reference choices are
+shared with complete-context resolution in `src/compiler/overloads/reference_inference.rs`. Partial inference skips
+unknown callee parameters, including nested and non-null refinements, instead of storing them as concrete arguments.
+Final applicability still checks bounds, unique reference selection, variance, arity, variadic shape, and suspension.
+Growing recursive substitutions stop at the existing type-depth guard.
+
+Calls rejected by those existing passes use `src/compiler/overloads/constrained.rs`. Its `arguments.rs` keeps overloaded
+references as alternatives, including references inside nested collection literals. Source-order scope snapshots remain
+authoritative; this exploration emits no instructions. A completed branch must pass ordinary argument applicability and
+unique reference resolution. Distinct complete instantiations remain ambiguous. Existing successful inference and
+reified generic identities are preserved.
+
+`constrained/literal_types.rs` recovers complete list/map shapes when the whole parameter is still unknown, retaining
+overloaded element alternatives and source-order scopes. It uses ordinary joins, default mutability, StableKey
+eligibility, and the existing empty/all-null restrictions. A bare inference variable receives the inferred whole value
+type; reconstruction cannot turn incompatible mutable or invariant whole values into an invented common type. Literal
+prefix alternatives retain the same bounded-exploration diagnostics.
+
+`constrained/expression_options.rs` extends candidates through anonymous functions and ordinary value blocks. It
+supplies contextual hints to returned references and nested collection elements, keeping unresolved callee variables
+separate from real caller parameters. `return_inference/options.rs` shares the ordinary function parameter/receiver
+scope, branch/loop/choice flow, and result joins through a result-provider interface. Alternative joins retain generic
+original views and bounded candidate sets. Selected contexts check lambda return expressions before applicability
+succeeds; ordinary body lowering remains authoritative for all source rules.
+
+Flow-only queries transfer effects and reachability without assigning types to ignored returns. Alternative or
+contextual result queries can defer an unavailable statement-expression type while following the same flow. Complete
+body checking still rejects invalid unused declarations and unavailable capture/private access. Lambda creation does not
+execute its body or retain unstable outer var guards.
+
+Normalized lambda bodies use the internal `ImplicitReturn` AST node for generated fallthrough. Lowering emits/checks
+that Unit return only when the path can reach it. A terminal choice, loop, or branch therefore does not create an
+incompatible unreachable return. Authored returns keep their ordinary checks. Capture and call-site walkers recognize
+the generated no-value transfer; source syntax, instruction and public artifact formats are unchanged.
+
+`src/generics/call_constraints.rs` owns lower, upper, and exact parameter constraints. `collect.rs` composes function
+and declaration-site variance; `common.rs` builds compatible joins and subtype intersections without arbitrary Any or
+invented projections. Function signatures never gain numeric or copying adapters. Existing mutable families and
+invariant nominal positions retain exact arguments. A different existing container family cannot supply a missing type
+argument by inventing a copy; contextual literal construction and copies after other facts establish the target remain
+available. `dependent.rs` propagates observed bounded values into the parameters of their bound patterns. For `<A, B:
+A>`, an observed Float for B can widen a supplied Int for A to Float; an unobserved bound alone cannot invent either
+argument. Structural propagation uses the same function and nominal variance rules.
+
+Each solver round selects provisional candidates before validating dependent bounds. A temporary conflict is retained
+until other parameters stop advancing, so a chain of dependent bounds does not fail in declaration order. Completed
+candidates still require every argument conversion and bound to hold. Observed caller types are never substituted
+through the callee map, including recursive calls with matching static parameter identities. The existing scalar
+widening helper can adjust the bounded value; it cannot create a container-family copy or function adapter.
+
+Inference queries retain the existing type-depth limit of 32. This development fallback additionally bounds each
+alternative set and state worklist to 256 entries and dependent-bound convergence to 64 passes; exhaustion reports a
+diagnostic. Relationship memo keys include direction, conversion mode, origin, and depth, keeping subtype-only and
+value-conversion facts separate. These finite guards are not evidence of the much larger resource target.
+
+Cyclic declaration rounds use `declarations::prepare_interface` to normalize names and generic parameter identities
+before semantic bound validation. Initial seed signatures can still contain source names such as A. The subsequent
+complete-interface pass and every lowering pass use `declarations::prepare`, which validates all installed bounds,
+including unused declarations. Provisional modules cannot be serialized or published as completed artifacts.
+
+Generic bounds are semantically validated after nominal interfaces are installed. Equality-based collection methods use
+the same element/key eligibility query as operators. Loaded module graphs check callable/storage collisions before
 publication. Dependency discovery sorts and deduplicates module identities independently of cache/source representation.
 
-Compiler artifacts use bifoil.module.v3, requiring regeneration of v2 typed bodies. The VM profile remains v2 because
+Compiler artifacts use bifoil.module.v6, requiring regeneration of v2 typed bodies. The VM profile remains v3 because
 these repairs retain the existing instructions. Template parts retain physical expression starts; choice conditions
 retain their own starts and once sites use opening headers. This metadata survives serialization without extra runtime
 scope instructions.
 
+Parsed arithmetic, range, cast, assertion, indexing, member, bound-reference, and call nodes retain the physical line of
+that operation's token. Lowering selects that origin before emitting its checked instructions; nested operations retain
+their independent origins. Delayed indexed reads/writes retain the captured target's origin. Generated member nodes
+inherit their enclosing declaration site. These locations survive module serialization, stored bodies, source-free
+linking, and checkpoint resumption through the existing instruction span format. Static diagnostics may still identify
+the enclosing statement; this runtime-location precision adds no instruction or artifact schema.
+
 ## Pipeline
 
 1. The CLI reads the manifest and discovers source or artifact dependencies without constructing every source AST.
-2. The lexer and parser construct the active component's AST, defined in `src/syntax.rs`.
-3. Declaration preparation resolves names, aliases, and generic scopes, then generates constructors and copies.
-4. Semantic analysis checks types, captures, initialization, reachability, and suspension permissions.
-5. Lowering emits instructions with original source spans into independently compiled modules.
-6. Shared-initializer analysis computes conservative dependencies and rejects cycles.
-7. Completed components retain signatures and summaries while function bodies move to temporary storage.
-8. The linker resolves summaries against the complete program and emits the deterministic startup plan.
-9. Canonical serialization reads one stored function at a time without rebuilding the whole instruction graph.
+2. The lexer and parser construct one active source module's AST, defined in `src/syntax.rs`. 3. Declaration preparation
+resolves names, aliases, and generic scopes, then generates constructors and copies. 4. Semantic analysis checks types,
+captures, initialization, reachability, and suspension permissions. 5. Lowering emits original source spans and spools
+each checked module's instructions before the next member. 6. Shared-initializer analysis computes conservative
+dependencies and rejects cycles. 7. Completed components retain signatures and summaries while function bodies move to
+temporary storage. 8. The linker resolves summaries against the complete program and emits the deterministic startup
+plan. 9. Canonical serialization reads one stored function at a time without rebuilding the whole instruction graph.
 
 `src/resources.rs` owns native allocation policy and platform memory enforcement. Linux/glibc uses one allocator arena
 before reader threads start, then preserves the stricter existing address-space guard. `src/trace.rs` emits optional
@@ -77,7 +164,16 @@ copying character arrays. Prose joins narrative lines while retaining code and l
 embedded directive markers there remain literal. Discovery and full parsing report the same lexical source locations.
 Conditional statements and block expressions share one branch parser. Branch lookahead inspects only the next aligned
 header; it cannot consume a following value block or anonymous function. Prose branch headers require their executable
-prefix, so literal `else:` narrative remains text. Whole cyclic components still require active ASTs.
+prefix, so literal `else:` narrative remains text. Cyclic passes release each module's AST before processing its
+successor. Lowered bodies stay in private storage while component headers and initialization metadata remain resident.
+`src/parser/fragments.rs` sends interpolation through the same layout and expression parser as ordinary code. Its
+initializer prefix adds no physical line and is discarded before constructing the AST. Token locations retain physical
+line and structural indentation, including tokens following multiline literals. Location arrays grow with token count,
+not with literal line count. Fragment parsers inherit the expression-depth budget and enter ordinary code mode.
+`src/parser/error.rs` retains a structured optional physical line until the public source-file boundary; adding outer
+statement context cannot overwrite an inner diagnostic or duplicate its path. Nested block statements retain their own
+source spans without changing the instruction or artifact format.
+
 `src/parser/operators.rs` shares precedence and continuation recognition. A terminal `>` is checked against complete
 type/reference grammars before joining another source line. Lexical `!in` and `!is` require identifier boundaries; ASCII
 operator matching borrows source bytes without allocating candidate character arrays.
@@ -458,7 +554,8 @@ digest rebuilds its client. Source-free distribution artifacts remain distinct f
 
 `src/cache/completed.rs` permits unchanged completed builds to skip decoding and linking. It verifies the compiler,
 manifest-derived context, source precedence, every source/cache/artifact checksum, the native source inventory, and the
-existing output bytes. Timestamps never establish validity. Up to four native threads verify independent module files;
+existing output bytes. Timestamps never establish validity. Up to sixteen native threads verify independent module files
+and then output chunks;
 all retain the incremental deadline and aggregate input accounting. A failed check takes the ordinary build path.
 
 The loader discovers strongly connected import components with Tarjan's algorithm. `src/loader/traversal.rs` owns an
@@ -585,11 +682,10 @@ callbacks. Bound method references retain receiver requirements alongside callab
 initialized local dependencies without losing their outer dependencies; loop backedges check carried callable state.
 `single_use_initializers.rs` proves at-most-once executed initialization by later direct local helper calls, including
 mutually exclusive source sites. The helper follows protected declarations in the same complete lexical body.
-`statements::body_with_tail` inventories supplied arguments,
-nested bodies, defaults, interpolation, and references before declaration checking; do/while also supplies its trailing
-condition. Other uses forbid the proof. Captured-write discovery includes structured and expression bodies, while
-ordinary immutable-flow checks prevent a second write within a call or loop. Generic headers and ordinary results retain
-their normal checking.
+`statements::body_with_tail` inventories supplied arguments, nested bodies, defaults, interpolation, and references
+before declaration checking; do/while also supplies its trailing condition. Other uses forbid the proof. Captured-write
+discovery includes structured and expression bodies, while ordinary immutable-flow checks prevent a second write within
+a call or loop. Generic headers and ordinary results retain their normal checking.
 
 Simple effect-free nongeneric parameterless non-suspending calls can expand through caller checks and retain a
 capture-free Unit stub. Other supported calls keep their real body, captures, and lowering, including suspension and
@@ -707,11 +803,10 @@ Summaries retain lexical slot, runtime name, shared owner, and binding identity.
 in the owning caller, before merging any skipped safe-call path. A proved overwrite discards dependencies of the old
 value; earlier value snapshots retain their own requirements. Captured val writes require a bounded direct-call plan.
 Calls through unknown function values remain conservative; eligible forward helpers retain declaration and code proofs.
-Some
-deferred stores to enclosing function cells also remain conservative because they require a stronger interprocedural
-publication proof. The analysis caps block fact storage at one million 64-bit words and propagation at 200,000 steps;
-exhausting an optional proof adds no initialization fact. Incremental deadline checks remain active. None of these
-summaries enter artifact encoding.
+Some deferred stores to enclosing function cells also remain conservative because they require a stronger
+interprocedural publication proof. The analysis caps block fact storage at one million 64-bit words and propagation at
+200,000 steps; exhausting an optional proof adds no initialization fact. Incremental deadline checks remain active. None
+of these summaries enter artifact encoding.
 
 `capture_initialization/entry_reads.rs` records reads before each block's local writes. After the fixed point, incoming
 must-write facts discharge reads dominated by an earlier store. A completed helper that overwrites a cell on every
@@ -1182,6 +1277,18 @@ unchanged. Tests cover detached result edits, later header changes, canonical ro
 malformed inputs. This storage is compiler metadata, not shared mutable story state.
 
 
+## Producer compatibility
+
+Published modules are checked against the supported module format and VM profile, not an exact compiler executable
+checksum. Ordinary and streamed inputs use the same structural validator before code-store publication; graph validation
+still checks dependency and cyclic-group identities. Claiming module v5 asserts the required ordered operand checks and
+complete interface obligations. A checksum does not authenticate a producer or prove its source semantics.
+
+Disposable caches additionally bind the executable SHA-256 and exact source bytes. A changed binary invalidates cache
+reuse while a conforming source-free module can remain compatible through its public format/profile contract. The
+[compatibility contract](../bifoil-language/compatibility-contract.md) defines supported pairs, version changes and
+failure behavior independently from full source-language and resource acceptance.
+
 ## Buffered canonical fingerprints
 
 artifact/buffered_hash.rs batches small serializer writes into a fixed 1 KiB buffer before feeding SHA-256. Larger
@@ -1247,3 +1354,71 @@ Immutable containers may still contain mutable objects, because changing those o
 count. Lexical identities preserve evidence through immutable aliases, captures, and safe narrowing. Ordinary iterable
 and null checks remain authoritative. Empty literals, unknown inputs, and reused names retain conservative
 initialization checks.
+
+
+## Capabilities of dependent projected arguments
+
+`src/declarations/capabilities.rs` owns completed capability states scoped to the type catalog. A key records a nominal
+declaration and the eligibility fact for each argument; equality and stable-key queries use separate tables. A query
+reuses completed states and evaluates only newly reached configurations. Catalog replacement invalidates both tables.
+
+`src/declarations/capabilities/query.rs` computes fixed points. Recursive nominal states begin eligible, then accumulate
+field/payload obstructions until stable; no provisional cyclic success enters the completed cache. A dependency worklist
+revisits recorded users of a changed fact, including the root query and newly reached argument configurations. Hidden
+arguments begin unproved and acquire facts from sufficient bounds. Known siblings supply their actual facts. Equatable
+does not imply StableKey, and a fixed outer binding does not freeze mutable contents. Independent bounds are tested
+directly, rather than expanding every sufficient combination into a disjunctive formula.
+
+Type-graph traversal memoizes borrowed shared-node identities within one unchanged argument context. Bound evaluation
+starts a separate context, and later fixed-point rounds do not reuse stale provisional facts. No addresses become
+serialized or language-level type identities. Generic parameter proof tracks active identities to reject circular
+self-proof independently of recursive nominal eligibility.
+
+Native tests cover all eight combinations of three stability facts, recursive false-proof propagation, shared alias
+graphs, and 28 independent bound alternatives. Source-free checkpoint cases combine multiple bounds, recursive data, sum
+payloads, and stable/unstable controls. No artifact or runtime wire format changes. Target-scale time and aggregate
+memory remain separate resource obligations.
+
+
+## Exact comparison views
+
+The v3 profile lowers === and !== to ExactCompare with separate left/right types and a negation flag. Each type is
+captured after checking that operand and before later operand effects can invalidate flow facts. Generic types remain
+reifiable parameter descriptors, consistent with their owning signatures. Runtime comparison does not insert scalar or
+collection conversions.
+
+Shared-initialization origin flow treats this instruction as a two-operand comparison. Captured-initializer CFG and
+entry-read analysis likewise retain its ordinary control/stack behavior. Both reusable-module readers reject legacy
+untyped exact binary operations when a producer claims the current profile. Container versions remain independent of the
+changed instruction profile; previous-profile source-free modules require regeneration.
+
+## Progression receiver views
+
+compiler/ranges.rs owns temporary progression-view lowering. It preserves original value identity and encodes the
+selected search path using existing instructions. Module format v4 requires integer query and view checks; older
+artifacts require regeneration. VM profile v3 retains its existing instruction behavior.
+
+
+Shared hoisting runs after type normalization, checks enclosing-state/type independence, and rewrites earlier shared
+references only within lifted initializers. Body lowering and return inference retain lexical declaration order and
+install aliases of persistent cells without executing local declarations or copies. All sites use the existing
+dependency scheduler and checkpoint representation. Module v5 additionally requires ordinary value-prefix priority;
+provisional and complete interfaces reject duplicate public entity names.
+
+
+FunctionAst retains prose_body from named/anonymous block parsing. Lowering opens/closes a callable-owned prose context
+without changing its signature, captures, returns, or suspension rules. Such bodies retain frames rather than compact
+captured-initializer expansion. Blank runs form one boundary. Dedent/branch lookahead leaves trailing separators with
+their surrounding suite and preserves narrative comment-looking text.
+
+## Preserving inferred generic arguments
+
+Callable specialization first uses supplied argument facts and declared bounds. When the substituted result already
+satisfies its expected type by genuine subtyping, those arguments remain selected. Expected result types may complete
+missing parameters first while retaining sufficient known arguments. Conversion compatibility is deliberately not the
+predicate: numeric widening and invariant positions still use contextual inference. Explicit arguments and callable
+reference adaptation keep their existing rules. The helper owns no instruction emission or runtime evaluation.
+
+Module v6 records this producer obligation because earlier lowered bodies may retain a different reified argument.
+Ordinary and streamed module readers reject v5 and earlier even when checksums are valid; regeneration is required.
+The VM instruction profile remains v3, with unchanged program/package/code/checkpoint representations.

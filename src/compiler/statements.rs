@@ -132,7 +132,14 @@ impl Compiler {
                         ty,
                         mutable,
                         value,
-                    } => self.variable(name, ty, mutable, value, context, line)?,
+                        shared,
+                    } => {
+                        if *shared {
+                            super::shared::bind_local(name, value, &mut context.scopes)?;
+                        } else {
+                            self.variable(name, ty, mutable, value, context, line)?;
+                        }
+                    }
                     StatementKind::Uninitialized { name, ty, mutable } => {
                         self.uninitialized(name, ty, mutable, context, line)?
                     }
@@ -154,6 +161,11 @@ impl Compiler {
                         }
                     }
                     StatementKind::Return(e) => self.return_value(e, context, line)?,
+                    StatementKind::ImplicitReturn => {
+                        if context.is_reachable {
+                            self.return_value(&None, context, line)?;
+                        }
+                    }
                     StatementKind::If { branches, no } => self.conditional(branches, no, context, line)?,
                     StatementKind::For {
                         label,

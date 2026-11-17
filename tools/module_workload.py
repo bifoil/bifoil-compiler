@@ -7,8 +7,7 @@ def scene_modules(scene_count=510):
     """Visit every scene and retain every typed destination at a final input wait."""
     sources = {
         "stats.bfl": (
-            "export shared var visits: Int = 0\n"
-            "export shared var total: Int = 0\n"
+            "export shared var visits: Int = 0\nexport shared var total: Int = 0\n"
         )
     }
     main = "import stats.visits\nimport stats.total\n"

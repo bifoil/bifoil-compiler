@@ -57,6 +57,12 @@ impl Facts {
                         break;
                     }
                 }
+                Op::Binary { operator } if operator == "===" || operator == "!==" => {
+                    facts
+                        .events
+                        .push(Event::Invalid("exact equality requires declared comparison views"));
+                    break;
+                }
                 Op::LegacyCall { target, .. } => facts.events.push(Event::Legacy(target.clone())),
                 _ => {}
             }

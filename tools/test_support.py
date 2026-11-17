@@ -1,24 +1,26 @@
 """Shared fixtures for compiler-tool integration tests."""
 
-from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
 import os
-from pathlib import Path
 import runpy
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parent
 
 
 def load_tool(name):
-    spec = importlib.util.spec_from_file_location("bifoil_test_" + name.replace("-", "_"), TOOLS / name)
+    spec = importlib.util.spec_from_file_location(
+        "bifoil_test_" + name.replace("-", "_"), TOOLS / name
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -29,7 +31,9 @@ class NativeCompilerTest(unittest.TestCase):
     def setUpClass(cls):
         selected = os.environ.get("BIFOIL_TEST_COMPILER")
         if not selected:
-            raise unittest.SkipTest("set BIFOIL_TEST_COMPILER to a built native compiler")
+            raise unittest.SkipTest(
+                "set BIFOIL_TEST_COMPILER to a built native compiler"
+            )
         cls.compiler = Path(selected).resolve()
         if not cls.compiler.is_file():
             raise ValueError("BIFOIL_TEST_COMPILER must name an existing executable")
@@ -71,10 +75,16 @@ class NativeCompilerTest(unittest.TestCase):
         output = project / "startup.txt"
         result = subprocess.run(
             [str(self.compiler), "build", str(project), "--out", str(output)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        line = next(line for line in output.read_text().splitlines() if line.startswith("*bifoil "))
+        line = next(
+            line
+            for line in output.read_text().splitlines()
+            if line.startswith("*bifoil ")
+        )
         program = json.loads(line.removeprefix("*bifoil "))
         self.assertEqual(program["entry"], "main.start")
         return program

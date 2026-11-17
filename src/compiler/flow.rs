@@ -136,8 +136,8 @@ pub(super) fn narrow_stable_condition(expr: &Expr, env: &mut ScopeStack) {
 fn narrow_condition_mode(expr: &Expr, env: &mut ScopeStack, positive: bool, stable_only: bool) {
     match expr {
         Expr::Group(e) => narrow_condition_mode(e, env, positive, stable_only),
-        Expr::Unary(op, e) if op == "!" => narrow_condition_mode(e, env, !positive, stable_only),
-        Expr::Binary(op, a, b) if (op == "&&" && positive) || (op == "||" && !positive) => {
+        Expr::Unary(op, e, ..) if op == "!" => narrow_condition_mode(e, env, !positive, stable_only),
+        Expr::Binary(op, a, b, ..) if (op == "&&" && positive) || (op == "||" && !positive) => {
             narrow_condition_mode(a, env, positive, stable_only);
             // A later operand may change a captured var after the earlier
             // test. Only facts established after that effect remain valid.
@@ -146,7 +146,7 @@ fn narrow_condition_mode(expr: &Expr, env: &mut ScopeStack, positive: bool, stab
             }
             narrow_condition_mode(b, env, positive, stable_only);
         }
-        Expr::Binary(op, a, b) if ["==", "!=", "===", "!=="].contains(&op.as_str()) => {
+        Expr::Binary(op, a, b, ..) if ["==", "!=", "===", "!=="].contains(&op.as_str()) => {
             let checked = match (a.as_ref(), b.as_ref()) {
                 (value, Expr::Null) | (Expr::Null, value) => Some(value),
                 _ => None,
@@ -157,7 +157,9 @@ fn narrow_condition_mode(expr: &Expr, env: &mut ScopeStack, positive: bool, stab
                 narrow_value(value, env, None, stable_only);
             }
         }
-        Expr::TypeOp { value, operator, ty } if (operator == "is" && positive) || (operator == "!is" && !positive) => {
+        Expr::TypeOp {
+            value, operator, ty, ..
+        } if (operator == "is" && positive) || (operator == "!is" && !positive) => {
             narrow_value(value, env, Some(ty), stable_only);
         }
         _ => {
@@ -238,7 +240,7 @@ impl SubjectSource {
             return None;
         }
         match expression {
-            Expr::Group(value) | Expr::Unwrap(value) => Self::capture(value, source, captured, env),
+            Expr::Group(value) | Expr::Unwrap(value, ..) => Self::capture(value, source, captured, env),
             Expr::Name(name) => lookup_ref(env, name).map(|_| Self::Binding(name.clone())),
             _ => super::field_proofs::subject_path(expression, env)
                 .map(|(path, permanent)| Self::Path { path, permanent }),
@@ -326,10 +328,12 @@ pub(super) fn pure_expression(e: &Expr) -> bool {
         // Type arguments add no effects, but cannot hide a call below this node.
         Expr::TypeApply { callee, .. } => pure_expression(callee),
         Expr::Construct { fields, .. } => fields.iter().all(|(_, value)| pure_expression(value)),
-        Expr::Group(e) | Expr::Unary(_, e) | Expr::Unwrap(e) | Expr::Spread(e) | Expr::BoundReference(e, _) => {
-            pure_expression(e)
-        }
-        Expr::Binary(_, a, b)
+        Expr::Group(e)
+        | Expr::Unary(_, e, ..)
+        | Expr::Unwrap(e, ..)
+        | Expr::Spread(e)
+        | Expr::BoundReference(e, ..) => pure_expression(e),
+        Expr::Binary(_, a, b, ..)
         | Expr::Index {
             receiver: a, index: b, ..
         } => pure_expression(a) && pure_expression(b),

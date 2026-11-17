@@ -26,7 +26,12 @@ pub(super) fn refine(body: &[Statement], scopes: &mut ScopeStack, owner: &str) -
                 ty,
                 value,
                 mutable,
+                shared,
             } => {
+                if *shared {
+                    super::shared::bind_local(name, value, &mut types)?;
+                    continue;
+                }
                 let actual = ty
                     .clone()
                     .or_else(|| infer(value, &types).ok())

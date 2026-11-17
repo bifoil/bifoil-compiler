@@ -41,7 +41,21 @@ pub(crate) fn parent(ty: &Type) -> Option<Type> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum FieldUse {
+    Read,
+    Write,
+}
+
 pub(crate) fn field(ty: &Type, name: &str) -> Option<FieldDef> {
+    field_view(ty, name, FieldUse::Read)
+}
+
+pub(crate) fn field_for_write(ty: &Type, name: &str) -> Option<FieldDef> {
+    field_view(ty, name, FieldUse::Write)
+}
+
+fn field_view(ty: &Type, name: &str, usage: FieldUse) -> Option<FieldDef> {
     let view = crate::generics::member_view(ty);
     let ty = &view;
     if let Type::Named { name: id, args } = ty {
@@ -61,8 +75,17 @@ pub(crate) fn field(ty: &Type, name: &str) -> Option<FieldDef> {
         let mut f = d.fields.get(name)?.clone();
         let hidden = super::projections::hidden_parameters(ty, &d);
         if super::projections::depends_on(&f.ty, &hidden) {
-            f.ty = super::projections::read_type(&f.ty, ty, &d);
-            f.mutable = false;
+            match usage {
+                FieldUse::Read => {
+                    f.ty = super::projections::read_type(&f.ty, ty, &d);
+                    f.mutable = false;
+                }
+                FieldUse::Write => {
+                    // Preserve the declaration's mutability/privacy. The lower
+                    // view admits only values safe for every hidden argument.
+                    f.ty = super::projections::input_type(&f.ty, ty, &d);
+                }
+            }
         } else {
             f.ty = crate::generics::substitute(&f.ty, &receiver_type_arguments(ty, &d));
         }
@@ -101,7 +124,7 @@ pub(crate) fn methods(ty: &Type, name: &str) -> Vec<Signature> {
         .get(name)
         .into_iter()
         .flatten()
-        .filter_map(|signature| super::projections::method(signature, ty, &definition))
+        .map(|signature| super::projections::method(signature, ty, &definition))
         .collect()
 }
 

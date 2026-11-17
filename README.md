@@ -4,7 +4,7 @@ A native Rust ahead-of-time compiler maintained by **chinay** for the Bifoil Fou
 
 The compiler reads Bifoil source, constructs an AST, checks the supported static rules, and emits typed instructions
 embedded in extended ChoiceScript. It also produces independently compiled module artifacts. The current development
-profile is `bifoil-vm.v2`.
+profile is `bifoil-vm.v3`.
 
 Full implementation of the language steering record is in progress. This repository does not yet implement the full
 specification or establish first-milestone compliance or release readiness. See the [implementation
@@ -85,9 +85,10 @@ target/release/bifoilc build examples/checkpoint --out dist/startup.txt --clean
 ```
 
 `--clean` bypasses the disposable cache. Clean builds scale with input; warmed incremental builds retain deadline checks
-at 9.5 seconds. An unchanged completed build can skip decoding and linking after byte verification of its inputs, module
-caches, native source inventory, and existing output. Changed builds still resolve/link the reachable program; the
-large-project capacity target remains unmet.
+at 9.5 seconds. [Cyclic source ownership](CYCLIC_MODULES.md) bounds parsed AST lifetime and records the measured
+memory/time tradeoff. An unchanged completed build can skip decoding and linking after byte verification of its inputs,
+module caches, native source inventory, and existing output. Changed builds still resolve/link the reachable program;
+the large-project capacity target remains unmet.
 
 Set `BIFOIL_TRACE_TIMINGS=1` to write elapsed module-loading, compilation, linking, and package-publication phases to
 stderr. This diagnostic keeps the ordinary output and deadline checks intact:
@@ -104,9 +105,11 @@ Add `--package` to emit a small `startup.txt` manifest and one content-addressed
 target/release/bifoilc build examples/checkpoint --out dist/startup.txt --package
 ```
 
-Deploy the root and every code scene named by that root together. This format requires `bifoil.package.v1` support in
-Bifoil Runtime; an older adapter cannot execute it. The generated root uses ordinary `*gosub_scene` commands to load
-code before starting the compiled story. It contains no Bifoil source to compile during play.
+Deploy the root and every code scene named by that root together. This format requires `bifoil.package.v2` support in
+Bifoil Runtime; an older adapter cannot execute it. The generated root contains checked declaration/continuation headers
+and one `*bifoil` command. The runtime fetches already compiled bodies on demand, without an eager native scene-call
+prelude. It contains no Bifoil source to compile during play. See the runtime's [versioned code-loading
+contract](../bifoil-runtime/LAZY_PACKAGES.md).
 
 A module's code filename depends on its signatures, instructions, and source locations. Changed dependency digests can
 recompile a client without replacing its identical code scene. Completed chunks publish before the root. Large compiler
@@ -117,18 +120,18 @@ and its referenced scenes; automatic cache garbage collection is not implemented
 
 Unchanged package builds can reuse a completed build after byte checks of the root, every referenced code scene, source
 inputs, module caches, and native source inventory. Missing or changed files invalidate that shortcut. Changed builds
-still verify and serialize reachable code; runtime loading remains eager. This reduces rewritten output after an edit
-and avoids decoding unchanged builds; large-project indexing and lazy code loading remain unfinished. Inline output
+still verify and serialize reachable code. Runtime instruction bodies load on demand through a bounded cache; checked
+declaration/continuation metadata remains resident. This reduces rewritten output after an edit and avoids decoding
+unchanged builds; large-project metadata indexing and selective changed-build linking remain unfinished. Inline output
 remains the default and retains its existing bytes and build identity. Package builds have their own build identities
 and same-build checkpoints.
 
 ## Independently compiled modules
 
-The current artifact format is `bifoil.module.v3`. Recompile artifacts produced by earlier compilers from their original
-source. Version 3 requires ordered operand checking; a new client cannot repair unchecked bodies stored in an old
-artifact. The VM instruction profile remains `bifoil-vm.v2`. Disposable caches automatically invalidate when the
-compiler
-executable changes.
+The current artifact format is `bifoil.module.v6`. Recompile artifacts produced by earlier compilers from their original
+source. Version 4 also requires integer membership checking and checked progression-view lowering. A new client cannot
+recover the erased source receiver context from an older body. The VM instruction profile remains `bifoil-vm.v3`.
+Disposable caches automatically invalidate when the compiler executable changes.
 
 
 ```sh
@@ -149,11 +152,20 @@ compiled callee. Digests detect changes; they do not authenticate a publisher. T
 Canonical hashes and bounded output writes stream through writers without allocating a second complete serialized
 program. Function bodies use scoped temporary storage; pending cached parents and completed components do not retain all
 their decoded instructions in memory. Artifact input validates and spools one decoded function at a time, retaining
-encoded bodies for one module. One cyclic component and declaration metadata can still remain resident. Output
-replacement happens only after successful compilation and a completed temporary-file write. After semantic checks and
-initialization planning, linked function headers become compact checksums before final output encoding. Stored payloads
-retain their byte, instruction-count, and header validation. This reduces late metadata lifetime; reachable declarations
-remain resident during compilation.
+encoded bodies for one module. Cyclic passes own one source AST at a time and spool checked bodies before the next
+member. Component hashing and cache publication stream stored functions; initialization analysis decodes one selected
+body at a time. Cyclic member modules share one immutable group identity; validated decoded identities reuse it only
+when their contents match. Weak indexing releases discarded member vectors. Declaration metadata remains resident, and
+serialized module artifacts still repeat component membership. Output replacement happens only after successful
+compilation and a completed temporary-file write. After semantic checks and initialization planning, linked function
+headers become compact checksums before final output encoding. Stored payloads retain their byte, instruction-count, and
+header validation. This reduces late metadata lifetime; reachable declarations remain resident during compilation.
+
+Checked arithmetic, ranges, casts, null assertions, indexing, member access, and calls report their physical operator or
+call line, including within continued expressions, callee defaults, lambdas, prose, and option labels. Independently
+compiled modules retain these spans after source files are removed and after execution resumes from an input checkpoint.
+Generated operations retain the enclosing declaration location. Syntax and static diagnostics may use their enclosing
+statement's location.
 
 ## Current coverage
 
@@ -213,15 +225,19 @@ request independent module compilation and source removal before the client buil
 through actual execution. Use `--jobs 4` for bounded parallel case execution; the default is one worker. Run semantic
 unit tests with `cargo test --locked --bin bifoilc`. Run deadline-sensitive CLI tests separately using the production
 profile: `cargo test --release --locked --test cli -- --test-threads=2`. Selection and index errors are rejected before
-any case runs, and output retains index order. Resource benchmarks remain isolated. Run the acceptance-gate process
-controls with `python -m unittest discover -s tools -p test_run_conformance.py`; these controls require a POSIX host.
-Silent or terminated child processes fail, including formatting and expected-error paths.
+any case runs, and output retains index order. Every child phase has a 120-second default deadline; `--phase-timeout`
+accepts a positive finite number of seconds. A timeout fails its case even if partial output contains an expected
+diagnostic. The runner terminates and waits for its direct child before removing the owned temporary project. This is
+not descendant-process accounting or the language's ten-second incremental-build requirement. Resource benchmarks remain
+isolated. Run the acceptance-gate process controls with `python -m unittest discover -s tools -p
+test_run_conformance.py`; these controls require a POSIX host. Silent or terminated child processes fail, including
+formatting and expected-error paths.
 
 Canonical fingerprint serialization uses a fixed 1 KiB hash buffer, with the logical-byte guard checked before
-buffering. All 613 native/CLI tests and 1,100 formatted cases in both output modes pass. Source/cache/artifact discovery
-retains identical roots within the current module format. Older module formats require regeneration. Validated pending
-bodies also skip redundant dependency decoding when neither analysis nor
-legacy collection needs them. Current resource observations and their mixed timings are recorded in RESOURCES.md.
+buffering. Native/CLI tests and formatted conformance cases cover source, cached, and source-free paths in both output
+modes. Source/cache/artifact discovery retains identical roots within the current module format. Older module formats
+require regeneration. Validated pending bodies also skip redundant dependency decoding when neither analysis nor legacy
+collection needs them. Current resource observations and their mixed timings are recorded in RESOURCES.md.
 
 ## Resources and boundaries
 
@@ -300,3 +316,17 @@ This stable-toolchain workflow collects Rust line coverage; it does not measure 
 The benchmark tools are local operator commands. The caller selects trusted compiler/Node executables and an output
 workspace. Tools pass separate argument entries without a shell, and fixed report names stay below the selected
 workspace. These explicit executable and output arguments are part of the tools' interface.
+
+
+Module v5 also requires value prefixes to win over same-named type aliases. Older bodies can contain the wrong enum
+constant despite matching result types. Nested shared declarations use one private persistent cell per source site,
+initialized before entry independently of enclosing call/instance state. VM profile v3 remains sufficient.
+
+
+Project builds select reachable modules through bifoil.toml and explicit imports. A neighboring unrelated .bfl file
+does not become source solely because of its suffix. Module/format commands explicitly select the input language,
+even for another extension; malformed/foreign content fails without replacing a prior artifact. The compiler does
+not register operating-system file associations.
+
+The [large narrative measurements](NARRATIVE_CAPACITY.md) distinguish source volume, filesystem conditions,
+individual process peaks, preserved failures, and the remaining complete-capacity obligations.

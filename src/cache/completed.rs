@@ -152,48 +152,24 @@ impl Cache {
         start: Instant,
     ) -> Option<(usize, u64)> {
         let entries: Vec<_> = modules.iter().collect();
-        let workers = std::thread::available_parallelism()
-            .map_or(1, usize::from)
-            .min(4)
-            .min(entries.len());
-        if workers <= 1 {
+        let batches = verify_batches(&entries, |chunk| {
             let mut total = 0;
             let mut reused = 0;
-            for (name, fingerprint) in entries {
+            for (name, fingerprint) in chunk {
                 reused += self.verify_module(context, name, fingerprint, &mut total, start)?;
             }
-            return Some((reused, total));
-        }
-        let enforce_deadline = crate::INCREMENTAL_DEADLINE.get();
-        std::thread::scope(|scope| {
-            let mut jobs = Vec::new();
-            for chunk in entries.chunks(entries.len().div_ceil(workers)) {
-                let job = std::thread::Builder::new()
-                    .name("bifoil-verify".into())
-                    .spawn_scoped(scope, move || {
-                        crate::INCREMENTAL_DEADLINE.set(enforce_deadline);
-                        let mut total = 0;
-                        let mut reused = 0;
-                        for (name, fingerprint) in chunk {
-                            reused += self.verify_module(context, name, fingerprint, &mut total, start)?;
-                        }
-                        Some((reused, total))
-                    })
-                    .ok()?;
-                jobs.push(job);
-            }
-            let mut reused = 0;
-            let mut total = 0u64;
-            for job in jobs {
-                let (count, bytes) = job.join().ok()??;
-                reused += count;
-                total = total.checked_add(bytes)?;
-                if total > crate::MAX_INPUT {
-                    return None;
-                }
-            }
             Some((reused, total))
-        })
+        })?;
+        let mut reused = 0;
+        let mut total = 0u64;
+        for (count, bytes) in batches {
+            reused += count;
+            total = total.checked_add(bytes)?;
+            if total > crate::MAX_INPUT {
+                return None;
+            }
+        }
+        Some((reused, total))
     }
     pub(crate) fn remember_completed(
         &self,
@@ -233,13 +209,21 @@ impl OutputFiles {
             return false;
         }
         let parent = context.output.parent().unwrap_or(Path::new("."));
-        self.chunks.iter().all(|(filename, checksum)| {
-            valid_chunk_file(filename)
-                && crate::input::hash(&parent.join(filename), MAX_ARTIFACT, None, start)
-                    .ok()
-                    .as_ref()
-                    == Some(checksum)
+        let entries = self.chunks.iter().collect::<Vec<_>>();
+        verify_batches(&entries, |chunk| {
+            for (filename, checksum) in chunk {
+                if !valid_chunk_file(filename)
+                    || crate::input::hash(&parent.join(filename), MAX_ARTIFACT, None, start)
+                        .ok()
+                        .as_ref()
+                        != Some(*checksum)
+                {
+                    return None;
+                }
+            }
+            Some(())
         })
+        .is_some()
     }
 }
 
@@ -253,4 +237,64 @@ fn valid_chunk_file(filename: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
+}
+
+/// Byte validation is I/O bound on mounted filesystems. Bound parallelism by
+/// hardware and a fixed ceiling; workers never parse bodies or spawn helpers.
+/// Every worker inherits the caller's incremental deadline. Failed optional
+/// checks still join all scoped workers before the normal rebuild path runs.
+fn verify_batches<T: Sync, R: Send>(entries: &[T], check: impl Fn(&[T]) -> Option<R> + Sync) -> Option<Vec<R>> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(16)
+        .min(entries.len());
+    if workers <= 1 {
+        return Some(vec![check(entries)?]);
+    }
+    let enforce_deadline = crate::INCREMENTAL_DEADLINE.get();
+    std::thread::scope(|scope| {
+        let mut jobs = Vec::new();
+        let check = &check;
+        for chunk in entries.chunks(entries.len().div_ceil(workers)) {
+            let job = std::thread::Builder::new()
+                .name("bifoil-verify".into())
+                .spawn_scoped(scope, move || {
+                    crate::INCREMENTAL_DEADLINE.set(enforce_deadline);
+                    check(chunk)
+                })
+                .ok()?;
+            jobs.push(job);
+        }
+        jobs.into_iter().map(|job| job.join().ok()?).collect()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_batches;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn optional_misses_join_all_workers_with_the_callers_deadline() {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::INCREMENTAL_DEADLINE.set(self.0);
+            }
+        }
+        let _restore = Restore(crate::INCREMENTAL_DEADLINE.get());
+        crate::INCREMENTAL_DEADLINE.set(true);
+        let visited = AtomicUsize::new(0);
+        let entries = (0..64).collect::<Vec<_>>();
+        let result = verify_batches(&entries, |chunk| {
+            assert!(crate::INCREMENTAL_DEADLINE.get());
+            for _ in chunk {
+                visited.fetch_add(1, Ordering::Relaxed);
+            }
+            (!chunk.contains(&0)).then_some(())
+        });
+        assert!(result.is_none());
+        assert_eq!(visited.load(Ordering::Relaxed), entries.len());
+        assert!(crate::INCREMENTAL_DEADLINE.get());
+    }
 }

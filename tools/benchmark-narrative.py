@@ -69,43 +69,77 @@ def main():
                 after = before.replace(old, "E" + old[1:], 1)
                 last.write_text(after)
                 os.utime(last, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-                report["edit_preserved_size"] = len(before.encode()) == len(after.encode())
-                report["edit_preserved_mtime"] = last.stat().st_mtime_ns == metadata.st_mtime_ns
+                report["edit_preserved_size"] = len(before.encode()) == len(
+                    after.encode()
+                )
+                report["edit_preserved_mtime"] = (
+                    last.stat().st_mtime_ns == metadata.st_mtime_ns
+                )
             result = observe(label, command, incremental=label != "populate")
             result["program_sha256"] = checksum(output)
             if label == "populate":
                 shutil.copyfile(output, root / "original.startup.txt")
         runs = report["runs"]
         assert runs["populate"]["program_sha256"] == runs["unchanged"]["program_sha256"]
-        assert runs["populate"]["program_sha256"] != runs["last_paragraph_edit"]["program_sha256"]
+        assert (
+            runs["populate"]["program_sha256"]
+            != runs["last_paragraph_edit"]["program_sha256"]
+        )
         formatted = root / "formatted.bfl"
-        subprocess.run([str(compiler), "format", str(last), "--out", str(formatted)], check=True)
+        subprocess.run(
+            [str(compiler), "format", str(last), "--out", str(formatted)], check=True
+        )
         assert formatted.read_bytes() == last.read_bytes()
         report["large_source_format_identity"] = True
         formatted.unlink()
         modules = root / "modules"
         modules.mkdir()
-        order = ["stats", *[f"rooms.r{index:04d}" for index in range(options.scenes)], "main"]
+        order = [
+            "stats",
+            *[f"rooms.r{index:04d}" for index in range(options.scenes)],
+            "main",
+        ]
         for module in order:
             source = root / "src" / (module.replace(".", "/") + ".bfl")
             artifact = modules / (module + ".bfm.json")
-            result = measure([
-                str(compiler), "module", str(source), "--name", module,
-                "--module-path", str(modules), "--out", str(artifact),
-            ])
+            result = measure(
+                [
+                    str(compiler),
+                    "module",
+                    str(source),
+                    "--name",
+                    module,
+                    "--module-path",
+                    str(modules),
+                    "--out",
+                    str(artifact),
+                ]
+            )
             report["publication"][module] = result
             if result["status"] or result["compiler_peak_rss_bytes"] >= 250_000_000:
                 raise RuntimeError(module + ": " + result["stderr"])
             source.unlink()
         source_free = root / "source-free.txt"
-        observe("source_free", [str(compiler), "build", str(root), "--out", str(source_free), "--clean"])
+        observe(
+            "source_free",
+            [str(compiler), "build", str(root), "--out", str(source_free), "--clean"],
+        )
         assert source_free.read_bytes() == output.read_bytes()
         packaged = root / "packaged/startup.txt"
-        package = [str(compiler), "build", str(root), "--out", str(packaged), "--package"]
+        package = [
+            str(compiler),
+            "build",
+            str(root),
+            "--out",
+            str(packaged),
+            "--package",
+        ]
         observe("package_populate", [*package, "--clean"])
         observe("package_cache", package, incremental=True)
         observe("package_unchanged", package, incremental=True)
-        report["artifact_bytes"] = sum(path.stat().st_size for path in modules.glob("*.bfm.json"))
+        report["artifact_bytes"] = sum(
+            path.stat().st_size for path in modules.glob("*.bfm.json")
+        )
         report["compiler_unchanged"] = checksum(compiler) == report["compiler_sha256"]
         assert report["compiler_unchanged"]
     finally:

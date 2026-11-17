@@ -7,7 +7,9 @@ use std::borrow::Cow;
 
 mod cursor;
 mod declarations;
+mod error;
 mod expressions;
+mod fragments;
 mod imports;
 mod layout;
 mod legacy;
@@ -19,6 +21,7 @@ mod text;
 mod types;
 
 use cursor::Cursor;
+pub(crate) use error::ParseError;
 use layout::logical_lines;
 use text::template;
 
@@ -28,19 +31,25 @@ pub(crate) use layout::protected_lines;
 struct Parser<'a> {
     source_lines: Vec<Cow<'a, str>>,
     line_index: usize,
-    file: &'a str,
+    line_offset: usize,
+    expression_depth: usize,
     block_depth: usize,
     prose_mode: bool,
 }
 
 pub fn parse(source: &str, file: &str) -> Result<Ast, String> {
+    parse_ast(source).map_err(|error| error.render(file))
+}
+
+fn parse_ast(source: &str) -> Result<Ast, ParseError> {
     if source.len() > MAX_SOURCE {
-        return Err(format!("{file}: source byte budget exceeded"));
+        return Err("source byte budget exceeded".into());
     }
     let mut parser = Parser {
-        source_lines: logical_lines(source).map_err(|error| format!("{file}:{error}"))?,
+        source_lines: logical_lines(source)?,
         line_index: 0,
-        file,
+        line_offset: 0,
+        expression_depth: 0,
         block_depth: 0,
         prose_mode: false,
     };
@@ -83,7 +92,7 @@ pub fn parse(source: &str, file: &str) -> Result<Ast, String> {
             {
                 ast.types.push(parser.parse_type_declaration(cursor, exported)?);
             } else if cursor.kw("shared") {
-                let line = parser.line_index + 1;
+                let line = parser.line();
                 let kind = parser.parse_variable(cursor)?;
                 if matches!(kind, StatementKind::Uninitialized { .. }) {
                     return Err(parser.error("shared declarations require initializers"));
@@ -93,6 +102,8 @@ pub fn parse(source: &str, file: &str) -> Result<Ast, String> {
                     stmt: Statement { kind, line },
                     exported,
                 });
+            } else if cursor.kw("val") || cursor.kw("var") {
+                return Err(parser.error("module-level values require shared val or shared var"));
             } else {
                 ast.functions.push(parser.parse_function(cursor, exported)?);
             }
@@ -107,3 +118,6 @@ pub fn parse(source: &str, file: &str) -> Result<Ast, String> {
     }
     Ok(ast)
 }
+
+#[cfg(test)]
+mod grammar_contracts;

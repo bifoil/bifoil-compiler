@@ -10,7 +10,7 @@ essential context for a future independent clone. The user's latest instructions
 The native Rust compiler and reusable language-analysis components for Bifoil.
 
 Use bifoil-language as the specification. Runtime behavior belongs in bifoil-runtime; editor presentation belongs in
-bifoil-editors. The current development profile targets extended ChoiceScript through bifoil-vm.v2.
+bifoil-editors. The current development profile targets extended ChoiceScript through bifoil-vm.v3.
 
 The foundation's broader goal is a FOSS ecosystem comprising a ChoiceScript-compatible superset language, shared
 language services, editor integrations, a toolchain, libraries, and potentially a standalone studio. The first compiler

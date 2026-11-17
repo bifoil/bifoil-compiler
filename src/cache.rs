@@ -18,6 +18,10 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::Instant;
 
+// Small records use the slice decoder's fast byte scanning. Larger records
+// retain bounded streaming, rather than allocating a full artifact buffer.
+use crate::input::BUFFERED_JSON_LIMIT;
+
 pub(crate) struct Cache {
     directory: PathBuf,
     compiler: String,
@@ -37,10 +41,10 @@ struct ParsedRecord {
     seed: crate::module_input::streamed::Seed,
 }
 #[derive(Serialize)]
-struct RecordRef<'a> {
+struct RecordRef<'a, F> {
     compiler: &'a str,
     source: &'a str,
-    module: &'a Module,
+    module: &'a Module<F>,
 }
 impl Cache {
     pub(crate) fn new(directory: PathBuf) -> Result<Self, String> {
@@ -81,6 +85,13 @@ impl Cache {
         started: Instant,
     ) -> Result<Option<Module>, String> {
         let path = self.path(name);
+        if fs::metadata(&path).is_ok_and(|metadata| metadata.is_file() && metadata.len() <= BUFFERED_JSON_LIMIT) {
+            let bytes = match crate::input::bytes(&path, BUFFERED_JSON_LIMIT) {
+                Ok(bytes) => bytes,
+                Err(_) => return Ok(None),
+            };
+            return self.load_bytes(name, source, &bytes, pending, started);
+        }
         let seed = crate::module_input::streamed::Seed::new(started);
         let parsed = crate::input::json_seed_hashed(
             &path,
@@ -150,14 +161,25 @@ impl Cache {
         self.observed.insert(name.into(), checksum);
         Ok(Some(module))
     }
-    pub(crate) fn store(&mut self, module: &Module, source: &str, start: Instant) -> Result<(), String> {
+    pub(crate) fn store<F: Serialize>(
+        &mut self,
+        module: &Module<F>,
+        source: &str,
+        start: Instant,
+    ) -> Result<(), String> {
         let record = RecordRef {
             compiler: &self.compiler,
             source,
             module,
         };
-        let checksum = crate::artifact::digest(&record)?;
-        crate::artifact::write_json(&self.path(&module.name), &record, "", "", start)?;
+        // The atomic writer already hashes the exact published bytes. Reuse
+        // that checksum instead of serializing every stored body a second time.
+        let prepared = crate::artifact::prepare_json(&self.path(&module.name), &record, "", "", start)?;
+        let mut checksum = String::new();
+        prepared.commit(|value| {
+            checksum.push_str(value);
+            Ok(())
+        })?;
         self.observed.insert(module.name.clone(), checksum);
         Ok(())
     }

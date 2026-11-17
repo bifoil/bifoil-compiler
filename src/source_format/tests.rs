@@ -62,3 +62,51 @@ fn formatting_rejects_invalid_source_and_bounded_expansion() {
     let error = format(&source, "wide.bfl").unwrap_err();
     assert!(error.contains("formatted source byte budget exceeded"), "{error}");
 }
+
+#[test]
+fn triple_delimiters_and_blank_rows_survive_formatting_without_content_changes() {
+    let source = concat!(
+        "scene start():\r\n",
+        "\tval text = \"\"\"\r\n",
+        "\talpha\r\n",
+        "  beta\r\n",
+        " \t\r\n",
+        "\t\"\"\"\r\n",
+        "\tprose:\r\n",
+        "\t    ${text.length}\r\n",
+    );
+    let normalized = format(source, "src/text.bfl").unwrap();
+    assert!(normalized.contains("\talpha\r\n  beta\r\n \t\r\n\t\"\"\"\r\n"));
+    assert_eq!(format(&normalized, "src/text.bfl").unwrap(), normalized);
+    let original = crate::parser::parse(source, "src/text.bfl").unwrap();
+    let formatted = crate::parser::parse(&normalized, "src/text.bfl").unwrap();
+    let text = |ast: &crate::syntax::Ast| format!("{:?}", ast.functions[0].body[0]);
+    assert_eq!(text(&original), text(&formatted));
+}
+
+#[test]
+fn prose_callable_modes_and_content_survive_indentation_formatting() {
+    let source = concat!(
+        "fun factory() -> () -> Int:\n",
+        "\tprose:\n",
+        "\t\t@fun answer() -> Int:\n",
+        "\t\t\tNarrative keeps its tabs.\n",
+        "\t\t\t@return 7\n",
+        "\t\t@return ::answer\n",
+    );
+    let formatted = format(source, "src/main.bfl").unwrap();
+    assert!(formatted.contains("\t\t\tNarrative keeps its tabs.\n"));
+    assert!(formatted.contains("            @return 7\n"));
+    assert_eq!(format(&formatted, "src/main.bfl").unwrap(), formatted);
+    let module = |text: &str| {
+        crate::compiler::compile(
+            crate::parser::parse(text, "src/main.bfl").unwrap(),
+            "main",
+            "src/main.bfl",
+            &BTreeMap::new(),
+            Instant::now(),
+        )
+        .unwrap()
+    };
+    assert_eq!(module(source).digest, module(&formatted).digest);
+}

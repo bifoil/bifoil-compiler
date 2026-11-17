@@ -23,12 +23,22 @@ def main():
     arguments = argparse.ArgumentParser(description=__doc__)
     arguments.add_argument("compiler", type=Path)
     arguments.add_argument("output_directory", type=Path)
-    arguments.add_argument("--workload", choices=["code", "function-graph"], default="code")
+    arguments.add_argument(
+        "--workload", choices=["code", "function-graph"], default="code"
+    )
     arguments.add_argument("--modules", type=int)
     arguments.add_argument("--routines", type=int)
     arguments.add_argument("--additions", type=int)
-    arguments.add_argument("--private-routines", action="store_true", help="keep generated graph routines private")
-    arguments.add_argument("--suspend-routines", action="store_true", help="use suspending arithmetic routines")
+    arguments.add_argument(
+        "--private-routines",
+        action="store_true",
+        help="keep generated graph routines private",
+    )
+    arguments.add_argument(
+        "--suspend-routines",
+        action="store_true",
+        help="use suspending arithmetic routines",
+    )
     options = arguments.parse_args()
     graph = options.workload == "function-graph"
     if options.modules is None:
@@ -48,9 +58,19 @@ def main():
         raise ValueError("use a new output directory")
     compiler = options.compiler.resolve()
     sources = (
-        write_function_project(root, options.modules, options.routines, export_routines=not options.private_routines)
-        if graph else write_code_project(
-            root, options.modules, options.routines, options.additions, suspending=options.suspend_routines
+        write_function_project(
+            root,
+            options.modules,
+            options.routines,
+            export_routines=not options.private_routines,
+        )
+        if graph
+        else write_code_project(
+            root,
+            options.modules,
+            options.routines,
+            options.additions,
+            suspending=options.suspend_routines,
         )
     )
     report = {
@@ -92,7 +112,10 @@ def main():
         for path in root.glob("*.txt"):
             shutil.copyfile(path, original / path.name)
         observe("unchanged", command, incremental=True)
-        if report["runs"]["populate"]["root_sha256"] != report["runs"]["unchanged"]["root_sha256"]:
+        if (
+            report["runs"]["populate"]["root_sha256"]
+            != report["runs"]["unchanged"]["root_sha256"]
+        ):
             raise RuntimeError("unchanged build altered the package root")
         last = options.modules * options.routines - 1
         if graph:
@@ -114,16 +137,28 @@ def main():
         modules = root / "modules"
         modules.mkdir()
         order = (
-            ["stats", *[f"routines.r{index:02d}" for index in range(options.modules)], "main"]
-            if graph else [*[f"code.m{index:02d}" for index in range(options.modules)], "main"]
+            [
+                "stats",
+                *[f"routines.r{index:02d}" for index in range(options.modules)],
+                "main",
+            ]
+            if graph
+            else [*[f"code.m{index:02d}" for index in range(options.modules)], "main"]
         )
         for module in order:
             source = root / "src" / (module.replace(".", "/") + ".bfl")
             observe(
                 module,
                 [
-                    compiler, "module", source, "--name", module, "--module-path", modules,
-                    "--out", modules / (module + ".bfm.json"),
+                    compiler,
+                    "module",
+                    source,
+                    "--name",
+                    module,
+                    "--module-path",
+                    modules,
+                    "--out",
+                    modules / (module + ".bfm.json"),
                 ],
                 destination=report["publication"],
             )
@@ -137,7 +172,9 @@ def main():
         ):
             raise RuntimeError("source-free linking changed the edited package")
         report["exact_source_free_root_bytes"] = True
-        report["artifact_bytes"] = sum(path.stat().st_size for path in modules.glob("*.bfm.json"))
+        report["artifact_bytes"] = sum(
+            path.stat().st_size for path in modules.glob("*.bfm.json")
+        )
         report["compiler_unchanged"] = checksum(compiler) == report["compiler_sha256"]
         if not report["compiler_unchanged"]:
             raise RuntimeError("compiler changed during measurement")

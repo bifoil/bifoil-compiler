@@ -5,6 +5,9 @@ an incremental compile using precompiled modules on reference hardware. Clean co
 report covers the Linux development compiler. It does not prove the complete language's eventual performance or every
 possible input within the limits.
 
+[Cyclic source ownership](CYCLIC_MODULES.md) records the 2026-11-04 before/after comparison, including lower observed
+RSS, slower edits, exact artifact checks, and the remaining component-paging boundary.
+
 ## Post-audit qualification (2026-10-31)
 
 The repaired release compiler has SHA-256
@@ -27,12 +30,12 @@ Eight original/restored executions check every routine reference, invocation, re
 replay after restoration. Separate checks create checkpoints from the actual original outputs, accept them against the
 same build, and reject them against the actual edited outputs for both workloads. The resource report records compiler
 process RSS, not a certification of the unresolved aggregate memory protocol, portable enforcement, or the accepted
-tens-to-hundreds-of-millions-of-lines capacity target. Admission guards remain unchanged.
+tens-to-hundreds-of-millions-of-lines capacity target. Admission guards remained unchanged for that qualification.
 
 ## Supported guards
 
 The compiler runs as one native process and starts no helper processes. It rejects source files above 1 MiB, aggregate
-source/artifact input above 64 MiB, more than 512 modules, more than 16,384 functions in one module, more than 81,920
+source/artifact input above 2 GiB, more than 1,024 modules, more than 16,384 functions in one module, more than 81,920
 across a program, more than 100,000 lowered instructions in one module, more than 500,000 across a program, output files
 above 16 MiB, expressions nested beyond 64, type graphs beyond 32 layers (including callable wrappers), structural
 blocks beyond 32, and more than 4,096 statements in one block. Function-signature width uses the source, code, and
@@ -50,14 +53,19 @@ Warmed incremental builds reject work at 9.5 seconds during loading, inference, 
 A cold cache and explicit `--clean` builds do not apply that fixed clean-build deadline. Scheduling and filesystem
 stalls can still delay a process; these checks alone are not a hard real-time guarantee.
 
-The capacity target is tens to hundreds of millions of source lines. These small fixed guards do not meet it.
+The capacity target is tens to hundreds of millions of source lines. The [narrative
+measurements](NARRATIVE_CAPACITY.md) now exercise that text volume; complete capacity acceptance remains unfinished.
 Content-validated module reuse, completed-output reuse, streamed JSON input/output, and disk-backed function bodies are
 implemented. Unfinished source ancestors retain paths and hashes rather than buffers or ASTs. Pending cached/artifact
-ancestors remain on disk until their import component is checked. Reusable acyclic bodies are summarized and transferred
-individually; stale cached bodies are discarded before recompilation. Completed components retain signatures and compact
-dependency summaries; final output reads one function at a time. A whole cyclic component, one source AST, and the
-reachable declaration metadata can still remain resident. Disk-backed interfaces, larger artifact indexes, lazy runtime
-loading, and capacity-scale workloads remain necessary. Raising configured counts would not establish compliance.
+ancestors remain on disk until their import component is checked. Cached cyclic validation hashes those stored bodies
+without restoring the whole component. Fresh cyclic lowering spools each checked member before compiling its successor.
+Initialization analysis decodes one selected function at a time, then resolves dependencies from headers and summaries.
+Stale cached bodies are discarded before recompilation. Source lowering retains one active module's AST/instructions;
+reachable declaration metadata remains resident. Cyclic member modules now share one immutable group identity,
+including after checked cache/artifact loading. Weak index entries release discarded member vectors; canonical module
+JSON still repeats membership for every member. Disk-backed interfaces, larger dependency indexes, selective
+changed-build linking, and capacity-scale workloads remain necessary. Lazy runtime code loading is separately
+implemented. Raising configured counts would not establish compliance.
 
 ## Workload and measurement
 
@@ -93,7 +101,7 @@ Historical numbers below retain their original protocol; only explicitly identif
 revised harness.
 
 Reference host: AMD Ryzen 7 6800H, 8 cores / 16 logical CPUs, x86-64 Linux under WSL2. Parsing, checking, lowering, and
-linking are sequential; unchanged-build byte verification uses up to four native threads. There is no intentional
+linking are sequential; unchanged-build byte verification uses up to sixteen native threads. There is no intentional
 competing benchmark. Sources and outputs are on the Windows-mounted filesystem. Output artifacts are removed, but OS
 caches are not flushed; the result is a clean project build, not a cold-machine benchmark.
 

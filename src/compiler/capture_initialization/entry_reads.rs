@@ -74,7 +74,7 @@ pub(super) fn record(op: &Op, stores: &BTreeMap<&str, usize>, written: &[u64], n
         | Op::Unwind { .. }
         | Op::Unused { .. }
         | Op::Unary { .. }
-        | Op::Binary { .. }
+        | Op::Binary { .. } | Op::ExactCompare { .. }
         | Op::Enter
         | Op::Exit
         | Op::Specialize { .. }

@@ -7,6 +7,7 @@ mod groups;
 mod identities;
 mod inputs;
 mod legacy;
+mod memberships;
 mod traversal;
 
 use crate::model::{MAX_ARTIFACT, MAX_PROGRAM_FUNCTIONS, MAX_PROGRAM_INSTRUCTIONS, MAX_SOURCE, Module};
@@ -20,7 +21,6 @@ struct Source {
     path: PathBuf,
     hash: String,
     logical: String,
-    ast: Option<Ast>,
 }
 struct Node {
     source: Option<Source>,
@@ -30,35 +30,24 @@ struct Node {
     dependencies: Vec<String>,
 }
 impl Node {
-    /// Interface resolution borrows the parsed source; final lowering takes it.
-    /// Hash-checked source identity remains in the node for cache publication.
-    fn take_ast(&mut self) -> Result<Ast, String> {
-        self.ast()?;
-        Ok(self.source.as_mut().unwrap().ast.take().unwrap())
-    }
-    fn ast(&mut self) -> Result<&Ast, String> {
+    /// Each pass owns only its active source AST. Revalidate the discovery hash
+    /// before parsing again so interfaces cannot silently outlive a source edit.
+    fn read_ast(&self) -> Result<Ast, String> {
         let source = self
             .source
-            .as_mut()
+            .as_ref()
             .ok_or("module source is required for recompilation")?;
-        if source.ast.is_none() {
-            // Discovery already accounted for this file in the aggregate input
-            // budget. Re-read only the module being compiled, and reject edits
-            // rather than compiling a body against stale dependency metadata.
-            let mut reread_bytes = 0;
-            let text = read(&source.path, MAX_SOURCE as u64, &mut reread_bytes)?;
-            if cache::Cache::source_hash(&text) != source.hash {
-                return Err(format!(
-                    "{}: source changed after dependency discovery; retry compilation",
-                    source.path.display()
-                ));
-            }
-            source.ast = Some(
-                parser::parse(&text, &source.logical)
-                    .map_err(|error| crate::diagnostics::at_source(&source.logical, None, error))?,
-            );
+        // Discovery already accounted for this file in the aggregate input budget.
+        let mut reread_bytes = 0;
+        let text = read(&source.path, MAX_SOURCE as u64, &mut reread_bytes)?;
+        if cache::Cache::source_hash(&text) != source.hash {
+            return Err(format!(
+                "{}: source changed after dependency discovery; retry compilation",
+                source.path.display()
+            ));
         }
-        Ok(source.ast.as_ref().unwrap())
+        parser::parse(&text, &source.logical)
+            .map_err(|error| crate::diagnostics::at_source(&source.logical, None, error))
     }
 }
 
@@ -76,6 +65,7 @@ pub(crate) struct Loader {
     nodes: BTreeMap<String, Node>,
     prefetched: inputs::Inputs,
     traversal: traversal::Traversal,
+    memberships: memberships::Memberships,
 }
 impl Loader {
     pub(crate) fn new(root: PathBuf, artifacts: PathBuf, start: Instant) -> Self {
@@ -93,6 +83,7 @@ impl Loader {
             nodes: BTreeMap::new(),
             prefetched: inputs::Inputs::default(),
             traversal: traversal::Traversal::default(),
+            memberships: memberships::Memberships::default(),
         }
     }
     pub(crate) fn load(&mut self, name: &str, explicit: Option<&Path>) -> Result<(), String> {
@@ -125,13 +116,16 @@ impl Loader {
                 _ => (read(&path, MAX_SOURCE as u64, &mut self.total)?, None),
             };
             let hash = cache::Cache::source_hash(&text);
-            let module = match &mut self.cache {
+            let mut module = match &mut self.cache {
                 Some(cache) => match cached {
                     Some(bytes) => cache.load_bytes(name, &hash, &bytes, &mut self.pending_code, self.start)?,
                     None => cache.load(name, &hash, &mut self.pending_code, self.start)?,
                 },
                 None => None,
             };
+            if let Some(group) = module.as_mut().and_then(|module| module.group.as_mut()) {
+                self.memberships.share(group);
+            }
             let logical = format!("src/{}.bfl", name.replace('.', "/"));
             let mut dependencies: Vec<String> = if let Some(module) = &module {
                 module.dependencies.keys().cloned().collect()
@@ -148,12 +142,7 @@ impl Loader {
             dependencies.dedup();
             let stored = module.is_some();
             Ok(Node {
-                source: Some(Source {
-                    path,
-                    hash,
-                    logical,
-                    ast: None,
-                }),
+                source: Some(Source { path, hash, logical }),
                 module,
                 artifact_hash: None,
                 stored,
@@ -182,7 +171,10 @@ impl Loader {
                 return Err("module artifact name mismatch".into());
             }
             let dependencies = module.dependencies.keys().cloned().collect();
-            let module = crate::module_input::check(module)?.store(&mut self.pending_code, self.start)?;
+            let mut module = crate::module_input::check(module)?.store(&mut self.pending_code, self.start)?;
+            if let Some(group) = &mut module.group {
+                self.memberships.share(group);
+            }
             Ok(Node {
                 source: None,
                 module: Some(module),
@@ -227,17 +219,7 @@ impl Loader {
             .map(|name| (name.clone(), self.nodes.remove(name).unwrap()))
             .collect::<BTreeMap<_, _>>();
         let cyclic = members.len() > 1 || nodes[&members[0]].dependencies.contains(&members[0]);
-        if cyclic {
-            // Whole-group fingerprinting still requires the active component.
-            for node in nodes.values_mut() {
-                if node.stored {
-                    self.pending_code
-                        .restore_pending(node.module.as_mut().unwrap(), self.start)?;
-                    node.stored = false;
-                }
-            }
-        }
-        let reusable = groups::reusable(&mut nodes, &self.modules, cyclic);
+        let reusable = groups::reusable(&mut nodes, &self.modules, cyclic, &self.pending_code, self.start)?;
         if !reusable {
             for (name, node) in &nodes {
                 if node.source.is_none() {
@@ -250,6 +232,11 @@ impl Loader {
                 // Reuse has failed and every member has source. Cached bodies
                 // and interfaces must not coexist with their replacements.
                 for node in nodes.values_mut() {
+                    if node.stored {
+                        self.pending_code
+                            .discard_pending(node.module.as_ref().unwrap(), self.start)?;
+                        node.stored = false;
+                    }
                     node.module = None;
                 }
                 self.compile_group(members, &mut nodes)?;
@@ -265,9 +252,8 @@ impl Loader {
                 // Release them before constructing the replacement AST/metadata.
                 node.module = None;
                 let logical = node.source.as_ref().unwrap().logical.clone();
-                let ast = node.ast()?;
-                let scope = crate::scope::for_ast(ast, name, &self.modules)?;
-                let ast = node.take_ast()?;
+                let ast = node.read_ast()?;
+                let scope = crate::scope::for_ast(&ast, name, &self.modules)?;
                 crate::trace::event(self.start, format_args!("compiling {name}"));
                 let module = compiler::compile(ast, name, &logical, &scope, self.start)?;
                 crate::trace::event(self.start, format_args!("compiled {name}"));
@@ -305,6 +291,9 @@ impl Loader {
                 module.summaries =
                     crate::initialization::summarize(&module.functions, &module.shared, &scope, self.start)?;
             }
+            if !node.stored {
+                self.code.record(&mut module, self.start)?;
+            }
             if let (Some(source), Some(cache)) = (&node.source, &mut self.cache) {
                 if reusable {
                     // Reusing validated records is incremental work even when
@@ -313,7 +302,11 @@ impl Loader {
                     budget(self.start)?;
                     cache.reused += 1;
                 } else {
-                    cache.store(&module, &source.hash, self.start)?;
+                    let (restored, published) = self
+                        .code
+                        .inspect_module(module, |stored| cache.store(stored, &source.hash, self.start));
+                    module = restored;
+                    published?;
                     cache.compiled += 1;
                 }
             }
@@ -333,9 +326,6 @@ impl Loader {
                         artifact_sha256: checksum,
                     },
                 );
-            }
-            if !node.stored {
-                self.code.record(&mut module, self.start)?;
             }
             self.modules.insert(name.clone(), module);
             self.order.push(name.clone());
@@ -383,15 +373,141 @@ mod tests {
         let text = "import helpers.value\nscene start():\n    val result = value + 1\n";
         fs::write(&path, text).unwrap();
         let mut loader = Loader::new(directory.0.clone(), directory.0.join("modules"), Instant::now());
-        let mut unchanged = loader.read_node("main", None).unwrap();
-        assert!(unchanged.source.as_ref().unwrap().ast.is_none());
+        let unchanged = loader.read_node("main", None).unwrap();
         assert_eq!(unchanged.dependencies, ["helpers"]);
-        assert_eq!(unchanged.ast().unwrap().functions.len(), 1);
+        assert_eq!(unchanged.read_ast().unwrap().functions.len(), 1);
 
-        let mut changed = loader.read_node("main", None).unwrap();
+        let changed = loader.read_node("main", None).unwrap();
         fs::write(&path, text.replace("+ 1", "+ 2")).unwrap();
-        let error = changed.ast().err().unwrap();
+        let error = changed.read_ast().err().unwrap();
         assert!(error.contains("source changed after dependency discovery; retry compilation"));
-        assert!(changed.source.as_ref().unwrap().ast.is_none());
+    }
+
+    #[test]
+    fn each_interface_pass_rechecks_source_identity() {
+        let directory = SourceDirectory::new();
+        let path = directory.0.join("main.bfl");
+        let text = "fun value() -> Int = 1\n";
+        fs::write(&path, text).unwrap();
+        let mut loader = Loader::new(directory.0.clone(), directory.0.join("modules"), Instant::now());
+        let node = loader.read_node("main", None).unwrap();
+        assert_eq!(node.read_ast().unwrap().functions.len(), 1);
+        assert_eq!(node.read_ast().unwrap().functions.len(), 1);
+        fs::write(&path, text.replace("= 1", "= 2")).unwrap();
+        let error = node.read_ast().err().unwrap();
+        assert!(error.contains("source changed after dependency discovery; retry compilation"));
+    }
+
+    #[test]
+    fn an_interface_pass_cannot_reuse_a_removed_source_ast() {
+        let directory = SourceDirectory::new();
+        let path = directory.0.join("main.bfl");
+        fs::write(&path, "fun value() -> Int = 1\n").unwrap();
+        let mut loader = Loader::new(directory.0.clone(), directory.0.join("modules"), Instant::now());
+        let node = loader.read_node("main", None).unwrap();
+        assert_eq!(node.read_ast().unwrap().functions.len(), 1);
+        fs::remove_file(&path).unwrap();
+        let error = node.read_ast().err().unwrap();
+        assert!(error.contains("main.bfl"), "{error}");
+    }
+
+    #[test]
+    fn cyclic_lowering_keeps_bodies_spooled_while_resolving_cross_member_shared_dependencies() {
+        let directory = SourceDirectory::new();
+        fs::write(directory.0.join("a.bfl"),
+            "import b.read as peerRead\nexport shared val base: Int = 3\nexport fun read() -> Int = base\nexport fun through() -> Int = peerRead()\n").unwrap();
+        fs::write(directory.0.join("b.bfl"),
+            "import a.read as peerRead\nexport shared val total: Int = peerRead() + 2\nexport fun read() -> Int = total\n").unwrap();
+        let mut loader = Loader::new(directory.0.clone(), directory.0.join("modules"), Instant::now());
+        let names: Vec<String> = vec!["a".into(), "b".into()];
+        let mut nodes = BTreeMap::from([
+            ("a".into(), loader.read_node("a", None).unwrap()),
+            ("b".into(), loader.read_node("b", None).unwrap()),
+        ]);
+        loader.compile_group(&names, &mut nodes).unwrap();
+        assert!(loader.pending_code.instructions > 0);
+        assert_eq!(loader.code.instructions, 0);
+        assert!(nodes.values().all(|node| node.stored));
+        let total = &nodes["b"].module.as_ref().unwrap().shared["b.total"];
+        assert_eq!(total.dependencies.as_ref(), ["a.base"]);
+        for node in nodes.values_mut() {
+            let module = node.module.take().unwrap();
+            assert!(module.functions.values().all(|function| function.code.is_empty()));
+            let (returned, serialized) = loader.pending_code.inspect_module(module, |stored| {
+                serde_json::to_vec(stored).map_err(|error| error.to_string())
+            });
+            let mut decoded: Module = serde_json::from_slice(&serialized.unwrap()).unwrap();
+            let expected_digest = std::mem::take(&mut decoded.digest);
+            assert_eq!(crate::model::digest(&decoded).unwrap(), expected_digest);
+            node.module = Some(returned);
+        }
+    }
+
+    #[test]
+    fn fresh_cached_and_source_free_components_share_identity_and_preserve_module_bytes() {
+        use std::sync::Arc;
+
+        struct RestoreDeadline(bool);
+        impl Drop for RestoreDeadline {
+            fn drop(&mut self) {
+                crate::INCREMENTAL_DEADLINE.set(self.0);
+            }
+        }
+        let _deadline = RestoreDeadline(crate::INCREMENTAL_DEADLINE.replace(false));
+        let directory = SourceDirectory::new();
+        let sources = directory.0.join("src");
+        let artifacts = directory.0.join("modules");
+        let cache = directory.0.join("cache");
+        for path in [&sources, &artifacts, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        let names = ["alpha", "beta", "gamma"];
+        for (index, name) in names.iter().enumerate() {
+            let peer = names[(index + 1) % names.len()];
+            let source = format!("import {peer}.read as peerRead\nexport fun read() -> Int = {index}\n");
+            fs::write(sources.join(format!("{name}.bfl")), source).unwrap();
+        }
+
+        fn encode(loader: &mut Loader) -> BTreeMap<String, Vec<u8>> {
+            let group = Arc::clone(loader.modules.values().next().unwrap().group.as_ref().unwrap());
+            assert_eq!(group.members, ["alpha", "beta", "gamma"]);
+            let names = loader.modules.keys().cloned().collect::<Vec<_>>();
+            let mut result = BTreeMap::new();
+            for name in names {
+                let module = loader.modules.remove(&name).unwrap();
+                assert!(Arc::ptr_eq(module.group.as_ref().unwrap(), &group), "{name}");
+                let (module, bytes) = loader.code.inspect_module(module, |stored| {
+                    serde_json::to_vec(stored).map_err(|error| error.to_string())
+                });
+                loader.modules.insert(name.clone(), module);
+                result.insert(name, bytes.unwrap());
+            }
+            result
+        }
+
+        let mut fresh = Loader::new(sources.clone(), artifacts.clone(), Instant::now());
+        fresh.cache = Some(cache::Cache::new(cache.clone()).unwrap());
+        fresh.load("alpha", None).unwrap();
+        assert_eq!(fresh.cache.as_ref().unwrap().compiled, 3);
+        let expected = encode(&mut fresh);
+        for (name, bytes) in &expected {
+            fs::write(artifacts.join(format!("{name}.bfm.json")), bytes).unwrap();
+        }
+        drop(fresh);
+
+        let mut cached = Loader::new(sources.clone(), artifacts.clone(), Instant::now());
+        cached.cache = Some(cache::Cache::new(cache).unwrap());
+        cached.load("alpha", None).unwrap();
+        assert_eq!(cached.cache.as_ref().unwrap().compiled, 0);
+        assert_eq!(cached.cache.as_ref().unwrap().reused, 3);
+        assert_eq!(encode(&mut cached), expected);
+        drop(cached);
+        for name in names {
+            fs::remove_file(sources.join(format!("{name}.bfl"))).unwrap();
+        }
+
+        let mut source_free = Loader::new(sources, artifacts, Instant::now());
+        source_free.load("alpha", None).unwrap();
+        assert_eq!(encode(&mut source_free), expected);
     }
 }

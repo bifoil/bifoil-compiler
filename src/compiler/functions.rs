@@ -64,6 +64,26 @@ impl Compiler {
         environment: FunctionEnvironment,
         sig: Signature,
     ) -> Result<(), String> {
+        self.function_body(fun, environment, sig, false)
+    }
+
+    pub(super) fn lambda_function(
+        &mut self,
+        fun: &FunctionAst,
+        environment: FunctionEnvironment,
+        sig: Signature,
+    ) -> Result<(), String> {
+        let discard_return_values = sig.result == Type::Unit;
+        self.function_body(fun, environment, sig, discard_return_values)
+    }
+
+    fn function_body(
+        &mut self,
+        fun: &FunctionAst,
+        environment: FunctionEnvironment,
+        sig: Signature,
+        discard_return_values: bool,
+    ) -> Result<(), String> {
         crate::declarations::validate_type(&sig.ty())?;
         let env = environment.into_scopes();
         let local = env.len() > 1;
@@ -73,6 +93,7 @@ impl Compiler {
             source_file: self.file.clone(),
             function_id: sig.id.clone(),
             return_type: sig.result.clone(),
+            discard_return_values,
             may_suspend: sig.suspend,
             loop_stack: vec![],
             next_iterator_id: 0,
@@ -187,7 +208,16 @@ impl Compiler {
             context.emit(Op::Return, fun.line);
             true
         } else {
-            self.body(&fun.body, &mut context)?
+            if fun.prose_body {
+                context.emit(Op::ProseStart, fun.line);
+                context.prose_depth += 1;
+            }
+            let returns = self.body(&fun.body, &mut context)?;
+            if fun.prose_body {
+                context.emit(Op::ProseEnd, fun.line);
+                context.prose_depth -= 1;
+            }
+            returns
         };
         if sig.result != Type::Unit && !returns {
             return Err(format!(
@@ -228,6 +258,19 @@ impl Compiler {
         context: &mut FunctionContext,
         line: usize,
     ) -> Result<(), String> {
+        if context.discard_return_values
+            && let Some(value) = e
+        {
+            let actual = self.expression(value, context, line)?;
+            if actual != Type::Unit {
+                context.emit(Op::Pop, line);
+                context.emit(unit(), line);
+            }
+            // Discarding a closure does not publish it to the caller.
+            context.emit(Op::Return, line);
+            context.is_reachable = false;
+            return Ok(());
+        }
         let target = context.return_type.clone();
         let ty = if let Some(e) = e {
             self.expression_as(e, context, line, Some(&target))?

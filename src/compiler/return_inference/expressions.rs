@@ -8,10 +8,43 @@ use crate::syntax::Expr;
 use std::sync::Arc;
 
 pub(super) fn returned(value: Option<&Expr>, env: &mut ScopeStack, analysis: &mut Inference) -> Result<(), String> {
+    if analysis.flow_only {
+        if let Some(value) = value {
+            collect(value, env, analysis)?;
+        }
+        return Ok(());
+    }
+    if analysis.alternatives.is_some() {
+        let options = if let Some(value) = value {
+            analysis.alternatives.as_mut().unwrap().expression(value, env)?
+        } else {
+            vec![Type::Unit.into()]
+        };
+        if value.is_none()
+            || collect(value.unwrap(), env, analysis)?
+            || options.iter().any(|value| value.ty == Type::Nothing)
+        {
+            analysis.choices.add(options)?;
+        }
+        return Ok(());
+    }
+    let discard = analysis.expected_return == Some(&Type::Unit);
+    let hint = analysis.expected_return.filter(|_| !discard);
     let ty = value
-        .map(|value| super::super::result_types::infer_value(value, env, None))
+        .map(|value| super::super::result_types::infer_value(value, env, hint))
         .transpose()?
         .unwrap_or_else(|| Type::Unit.into());
+    if let Some(expected) = hint
+        && ty.ty != Type::Pending
+        && !expected.accepts(&ty.ty)
+    {
+        return Err(format!("return requires {expected}, found {}", ty.ty));
+    }
+    let ty = if discard && ty.ty != Type::Nothing {
+        Type::Unit.into()
+    } else {
+        ty
+    };
     if let Some(value) = value {
         if collect(value, env, analysis)? || ty.ty == Type::Nothing {
             // A bottom-valued return expression differs from having no value
@@ -42,7 +75,7 @@ pub(super) fn collect(expression: &Expr, env: &mut ScopeStack, analysis: &mut In
             env.pop();
             Ok(reaches)
         }
-        Expr::Binary(operator, left, right) => {
+        Expr::Binary(operator, left, right, ..) => {
             let left_type = (operator == "?:").then(|| infer(left, env).ok()).flatten();
             if !collect(left, env, analysis)? {
                 return Ok(false);
@@ -65,7 +98,7 @@ pub(super) fn collect(expression: &Expr, env: &mut ScopeStack, analysis: &mut In
                 collect(right, env, analysis)
             })
         }
-        Expr::Call(callee, args) | Expr::SafeCall(callee, args) => {
+        Expr::Call(callee, args, ..) | Expr::SafeCall(callee, args, ..) => {
             let resolved = super::super::specialize_signature(callee, Some(args), None, env)
                 .ok()
                 .flatten();
@@ -104,7 +137,9 @@ pub(super) fn collect(expression: &Expr, env: &mut ScopeStack, analysis: &mut In
                 )))
             })
         }
-        Expr::Index { receiver, index, safe } => {
+        Expr::Index {
+            receiver, index, safe, ..
+        } => {
             let ty = if *safe { infer(receiver, env).ok() } else { None };
             if !collect(receiver, env, analysis)? {
                 return Ok(false);
@@ -116,7 +151,7 @@ pub(super) fn collect(expression: &Expr, env: &mut ScopeStack, analysis: &mut In
                 |env, analysis| collect(index, env, analysis),
             )
         }
-        Expr::Unwrap(value) => {
+        Expr::Unwrap(value, ..) => {
             if !collect(value, env, analysis)? {
                 return Ok(false);
             }
@@ -124,9 +159,9 @@ pub(super) fn collect(expression: &Expr, env: &mut ScopeStack, analysis: &mut In
             Ok(true)
         }
         Expr::Group(value)
-        | Expr::Unary(_, value)
+        | Expr::Unary(_, value, ..)
         | Expr::Spread(value)
-        | Expr::BoundReference(value, _)
+        | Expr::BoundReference(value, ..)
         | Expr::Member { receiver: value, .. }
         | Expr::TypeOp { value, .. }
         | Expr::TypeApply { callee: value, .. } => collect(value, env, analysis),

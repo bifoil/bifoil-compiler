@@ -5,6 +5,7 @@ use super::{ScopeStack, infer_as};
 use crate::model::Type;
 use crate::syntax::Expr;
 
+#[derive(Clone, PartialEq)]
 pub(super) struct InferredValue {
     pub(super) ty: Type,
     original: Option<Type>,
@@ -24,7 +25,7 @@ pub(super) fn infer_value(
     match expression {
         Expr::Block(body) => return super::values::infer_block_result(body, env, expected),
         Expr::Group(value) => return infer_value(value, env, expected),
-        Expr::Unwrap(value) => {
+        Expr::Unwrap(value, ..) => {
             let source_expected = expected.map(Type::nullable);
             let source = infer_value(value, env, source_expected.as_ref())?;
             return Ok(InferredValue {

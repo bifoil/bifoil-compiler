@@ -2,13 +2,13 @@
 
 import argparse
 import json
+import math
 import re
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
-
 
 CASE_FIELDS = {
     "id",
@@ -35,17 +35,25 @@ def validate_case(case):
     if not isinstance(identifier, str) or not re.fullmatch(r"[a-z0-9-]+", identifier):
         raise ValueError("case ids use lowercase letters, digits, and hyphens")
     if unknown := case.keys() - CASE_FIELDS:
-        raise ValueError(f"{identifier}: unknown case fields: {', '.join(sorted(unknown))}")
+        raise ValueError(
+            f"{identifier}: unknown case fields: {', '.join(sorted(unknown))}"
+        )
     if sum(key in case for key in ("directory", "files", "source")) != 1:
-        raise ValueError(f"{identifier}: provide exactly one of directory, files, or source")
+        raise ValueError(
+            f"{identifier}: provide exactly one of directory, files, or source"
+        )
     if "compile_error" in case and "runtime_error" in case:
-        raise ValueError(f"{identifier}: compile and runtime errors are mutually exclusive")
+        raise ValueError(
+            f"{identifier}: compile and runtime errors are mutually exclusive"
+        )
     for key in ("directory", "source", "compile_error", "runtime_error"):
         if key in case and not isinstance(case[key], str):
             raise ValueError(f"{identifier}: {key} must be a string")
     for key in ("compile_error", "runtime_error"):
         if key in case and not case[key]:
-            raise ValueError(f"{identifier}: {key} must be a nonempty expected diagnostic")
+            raise ValueError(
+                f"{identifier}: {key} must be a nonempty expected diagnostic"
+            )
     for key in ("decisions", "choices", "output", "options", "precompile"):
         if key in case and not isinstance(case[key], list):
             raise ValueError(f"{identifier}: {key} must be an array")
@@ -53,7 +61,8 @@ def validate_case(case):
         if any(not isinstance(value, str) for value in case.get(key, [])):
             raise ValueError(f"{identifier}: {key} entries must be strings")
     if any(
-        not isinstance(group, list) or any(not isinstance(label, str) for label in group)
+        not isinstance(group, list)
+        or any(not isinstance(label, str) for label in group)
         for group in case.get("options", [])
     ):
         raise ValueError(f"{identifier}: options must contain arrays of labels")
@@ -64,7 +73,9 @@ def validate_case(case):
         not isinstance(name, str) or not isinstance(text, str)
         for name, text in case["files"].items()
     ):
-        raise ValueError(f"{identifier}: files must map relative paths to source strings")
+        raise ValueError(
+            f"{identifier}: files must map relative paths to source strings"
+        )
     if "quantum" in case and (type(case["quantum"]) is not int or case["quantum"] <= 0):
         raise ValueError(f"{identifier}: quantum must be a positive integer")
     return identifier
@@ -122,35 +133,71 @@ def child_failure(phase, result):
     executable = result.args[0]
     status = (
         f"signal {-result.returncode}"
-        if result.returncode < 0 else f"exit {result.returncode}"
+        if result.returncode < 0
+        else f"exit {result.returncode}"
     )
-    output = "\n".join(part.strip() for part in (result.stderr, result.stdout) if part.strip())
+    output = "\n".join(
+        part.strip() for part in (result.stderr, result.stdout) if part.strip()
+    )
     message = f"{phase} failed: {executable} ({status})"
     return message + (": " + output if output else " (no output)")
 
 
-def format_sources(project, case, compiler):
+DEFAULT_PHASE_TIMEOUT = 120.0
+
+
+class PhaseTimeout(RuntimeError):
+    """A timed-out process can never satisfy an expected language diagnostic."""
+
+
+def positive_timeout(value):
+    try:
+        seconds = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "timeout must be a positive finite number"
+        ) from error
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a positive finite number")
+    return seconds
+
+
+def run_child(phase, command, timeout):
+    try:
+        return subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        # subprocess.run kills and waits for its direct child before raising.
+        # Propagate outside expected-diagnostic handling and temporary-project ownership.
+        raise PhaseTimeout(f"{phase} timed out after {timeout:g} seconds") from error
+
+
+def format_sources(project, case, compiler, timeout=DEFAULT_PHASE_TIMEOUT):
     """Normalize valid generated inputs and check idempotence before compiling."""
     for source in sorted((project / "src").rglob("*.bfl")):
-        result = subprocess.run(
-            [str(compiler), "format", str(source)], text=True, capture_output=True
+        result = run_child(
+            "source formatting", [str(compiler), "format", str(source)], timeout
         )
         if result.returncode:
             # Invalid syntax remains untouched for the normal expected-error check.
-            if case.get("compile_error") and result.returncode > 0 and result.stderr.strip():
+            if (
+                case.get("compile_error")
+                and result.returncode > 0
+                and result.stderr.strip()
+            ):
                 continue
             return child_failure("source formatting", result)
         source.write_text(result.stdout)
-        checked = subprocess.run(
+        checked = run_child(
+            "source formatting idempotence",
             [str(compiler), "format", str(source), "--check"],
-            text=True, capture_output=True,
+            timeout,
         )
         if checked.returncode:
             return child_failure("source formatting idempotence", checked)
     return None
 
 
-def precompile_modules(project, case, compiler):
+def precompile_modules(project, case, compiler, timeout=DEFAULT_PHASE_TIMEOUT):
     """Exercise reusable artifacts by removing their original source before linking."""
     sources = []
     for name in case.get("precompile", []):
@@ -160,7 +207,8 @@ def precompile_modules(project, case, compiler):
         source = project / "src" / relative.with_suffix(".bfl")
         output = project / "modules" / relative.with_suffix(".bfm.json")
         output.parent.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
+        result = run_child(
+            "module precompilation",
             [
                 str(compiler),
                 "module",
@@ -172,8 +220,7 @@ def precompile_modules(project, case, compiler):
                 "--module-path",
                 str(project / "modules"),
             ],
-            text=True,
-            capture_output=True,
+            timeout,
         )
         if result.returncode:
             return child_failure("module precompilation", result)
@@ -199,8 +246,17 @@ def compare_result(case, actual):
 
 
 def run_case(
-    case, index_path, compiler, runtime, node, windows_node, engine, *,
-    packaged=False, formatted=False,
+    case,
+    index_path,
+    compiler,
+    runtime,
+    node,
+    windows_node,
+    engine,
+    *,
+    packaged=False,
+    formatted=False,
+    phase_timeout=DEFAULT_PHASE_TIMEOUT,
 ):
     # TemporaryDirectory owns every generated project, including failure paths.
     # On WSL, a Windows Node process needs a directory on the mounted Windows drive.
@@ -228,37 +284,40 @@ def run_case(
         if engine:
             case["native_engine"] = native_path(engine, windows_node)
         write_project(project, case, sources, legacy_sources)
-        if formatted and (failure := format_sources(project, case, compiler)) is not None:
+        if (
+            formatted
+            and (failure := format_sources(project, case, compiler, phase_timeout)) is not None
+        ):
             return failure
-        if (failure := precompile_modules(project, case, compiler)) is not None:
+        if (failure := precompile_modules(project, case, compiler, phase_timeout)) is not None:
             return failure
         startup = project / "startup.txt"
         command = [str(compiler), "build", str(project), "--out", str(startup)]
         if packaged:
             command.append("--package")
-        compiled = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-        )
+        compiled = run_child("compilation", command, phase_timeout)
         if compiled.returncode < 0:
             return child_failure("compilation", compiled)
         if expected_error := case.get("compile_error"):
             if compiled.returncode == 0 or expected_error not in compiled.stderr:
-                observed = child_failure("compilation", compiled) if compiled.returncode else "compilation succeeded"
+                observed = (
+                    child_failure("compilation", compiled)
+                    if compiled.returncode
+                    else "compilation succeeded"
+                )
                 return f"expected compile error {expected_error}; {observed}"
             return None
         if compiled.returncode:
             return child_failure("compilation", compiled)
-        executed = subprocess.run(
+        executed = run_child(
+            "execution",
             [
                 node,
                 native_path(runtime / "tools/execute-conformance.mjs", windows_node),
                 native_path(startup, windows_node),
                 native_path(project / "case.json", windows_node),
             ],
-            text=True,
-            capture_output=True,
+            phase_timeout,
         )
         if executed.returncode:
             return child_failure("execution", executed)
@@ -285,10 +344,21 @@ def main():
         default=1,
         help="Run up to four isolated cases concurrently; results retain index order",
     )
-    parser.add_argument("--package", action="store_true", help="Exercise independently reusable code scene packages")
     parser.add_argument(
-        "--format-sources", action="store_true",
+        "--package",
+        action="store_true",
+        help="Exercise independently reusable code scene packages",
+    )
+    parser.add_argument(
+        "--format-sources",
+        action="store_true",
         help="Format generated Bifoil inputs and verify idempotence before compilation",
+    )
+    parser.add_argument(
+        "--phase-timeout",
+        type=positive_timeout,
+        default=DEFAULT_PHASE_TIMEOUT,
+        help="Maximum seconds for each formatter, precompiler, compiler, or executor process (default: 120)",
     )
     arguments = parser.parse_args()
     compiler = Path(arguments.compiler).resolve()
@@ -316,17 +386,21 @@ def main():
 
     def execute(entry):
         case, index = entry
-        return run_case(
-            case,
-            index,
-            compiler,
-            runtime,
-            arguments.node,
-            windows_node,
-            arguments.engine,
-            packaged=arguments.package,
-            formatted=arguments.format_sources,
-        )
+        try:
+            return run_case(
+                case,
+                index,
+                compiler,
+                runtime,
+                arguments.node,
+                windows_node,
+                arguments.engine,
+                packaged=arguments.package,
+                formatted=arguments.format_sources,
+                phase_timeout=arguments.phase_timeout,
+            )
+        except PhaseTimeout as error:
+            return str(error)
 
     if not work:
         raise ValueError("no conformance cases selected")

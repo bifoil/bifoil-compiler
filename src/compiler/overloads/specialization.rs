@@ -4,7 +4,14 @@ use super::super::{ScopeStack, infer};
 use super::{CallableSpecialization, ungroup};
 use crate::model::{GenericParam, Signature, Type};
 use crate::syntax::Expr;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+
+#[derive(Clone, Copy)]
+pub(super) enum ResultInference {
+    Join,
+    Missing,
+}
 
 pub(super) fn specialize(
     signature: &Signature,
@@ -13,6 +20,7 @@ pub(super) fn specialize(
     positions: &[usize],
     expected: Option<&Type>,
     env: &ScopeStack,
+    result_inference: ResultInference,
 ) -> Result<CallableSpecialization, String> {
     let mut types = BTreeMap::new();
     let explicit = match expression {
@@ -44,8 +52,22 @@ pub(super) fn specialize(
             }
             let supplied_types = supplied.is_ok().then(|| types.clone());
             let inferred = supplied.and_then(|_| {
-                if let Some(expected) = expected {
-                    crate::generics::infer(&signature.result, expected, &signature.generics, &mut types)?;
+                if let Some(expected) = expected
+                    && !(matches!(result_inference, ResultInference::Join)
+                        && preserve_supplied_result(signature, expected, &mut types))
+                {
+                    let inferable = match result_inference {
+                        ResultInference::Join => Cow::Borrowed(signature.generics.as_slice()),
+                        ResultInference::Missing => Cow::Owned(
+                            signature
+                                .generics
+                                .iter()
+                                .filter(|parameter| !types.contains_key(&parameter.name))
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        ),
+                    };
+                    crate::generics::infer(&signature.result, expected, &inferable, &mut types)?;
                 }
                 crate::generics::check(&signature.generics, &types)
             });
@@ -86,6 +108,34 @@ pub(super) fn specialize(
     })
 }
 
+/// Preserve supplied type arguments when a genuine result subtype already fits.
+/// Expected types may fill missing parameters first, but value conversions and
+/// invariant positions still use ordinary contextual inference when needed.
+fn preserve_supplied_result(signature: &Signature, expected: &Type, types: &mut BTreeMap<String, Type>) -> bool {
+    let fits = |arguments: &BTreeMap<String, Type>| {
+        crate::generics::check(&signature.generics, arguments).is_ok()
+            && crate::generics::substitute(&signature.result, arguments).subtype_of(expected)
+    };
+    if fits(types) {
+        return true;
+    }
+    let missing = signature
+        .generics
+        .iter()
+        .filter(|parameter| !types.contains_key(&parameter.name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return false;
+    }
+    let mut completed = types.clone();
+    if crate::generics::infer(&signature.result, expected, &missing, &mut completed).is_err() || !fits(&completed) {
+        return false;
+    }
+    *types = completed;
+    true
+}
+
 /// Raw supplied values establish compatible joins. Empty literals and
 /// overloaded references may instead need the completed parameter context.
 fn infer_supplied(
@@ -97,6 +147,7 @@ fn infer_supplied(
     types: &mut BTreeMap<String, Type>,
 ) -> Result<(), String> {
     let mut scope = env.clone();
+    let mut deferred = vec![];
     for ((name, value), index) in arguments.iter().zip(positions) {
         let grouped = signature.params[*index].vararg && (name.is_some() || matches!(value, Expr::Spread(_)));
         let value = if let Expr::Spread(inner) = value {
@@ -104,48 +155,50 @@ fn infer_supplied(
         } else {
             value
         };
-        if let Ok(mut actual) = infer(value, &scope) {
+        let actual = if super::callbacks::requires_context(value, &scope) {
+            None
+        } else {
+            infer(value, &scope).ok()
+        };
+        if let Some(mut actual) = actual {
             if grouped {
                 actual = actual.item_type().ok_or("variadic group requires List")?;
             }
             crate::generics::infer(&signature.params[*index].ty, &actual, inferable, types)?;
+        } else {
+            let element = signature.params[*index].ty.clone();
+            deferred.push(super::callbacks::Deferred {
+                value,
+                pattern: if grouped {
+                    Type::named("List", vec![element])
+                } else {
+                    element
+                },
+                scope: scope.clone(),
+            });
         }
         super::super::return_inference::normal_completion(value, &mut scope)?;
     }
-    Ok(())
+    super::callbacks::resolve(&deferred, inferable, types)
 }
 
 /// A reference needs a genuine function subtype, not a value-conversion
 /// adapter. Return covariance must not replace a bound-valid input argument.
 fn infer_reference(signature: &Signature, expected: &Type, types: &mut BTreeMap<String, Type>) -> Result<(), String> {
-    let inferred = crate::generics::infer(&signature.ty(), expected, &signature.generics, types)
-        .and_then(|_| crate::generics::check(&signature.generics, types));
-    let Err(error) = inferred else { return Ok(()) };
-
-    crate::generics::refine_nonnull_arguments(&signature.generics, types);
-    if crate::generics::check(&signature.generics, types).is_ok()
-        && crate::generics::signature(signature, types).ty().subtype_of(expected)
+    let options = super::reference_inference::options(signature, expected, &[])?;
+    if let Some(selected) = options
+        .arguments
+        .iter()
+        .find(|types| crate::generics::signature(signature, types).ty().subtype_of(expected))
     {
+        *types = selected.clone();
         return Ok(());
     }
-    let Type::Function { params, result, .. } = expected else {
-        return Err(error);
-    };
-    let mut inputs = BTreeMap::new();
-    for (parameter, target) in signature.params.iter().zip(params.iter()) {
-        crate::generics::infer(&parameter.ty, target, &signature.generics, &mut inputs)?;
-    }
-    let returned = signature
-        .generics
-        .iter()
-        .filter(|parameter| !inputs.contains_key(&parameter.name))
-        .cloned()
-        .collect::<Vec<_>>();
-    crate::generics::infer(&signature.result, result, &returned, &mut inputs)?;
-    crate::generics::check(&signature.generics, &inputs)?;
-    if !crate::generics::signature(signature, &inputs).ty().subtype_of(expected) {
+    if let Some(error) = options.initial_error {
         return Err(error);
     }
-    *types = inputs;
+    // An initially bound-valid map retains the old reference mismatch diagnostic
+    // in the caller, which performs the final subtype check.
+    *types = options.arguments[0].clone();
     Ok(())
 }

@@ -59,7 +59,9 @@ def program_source(workload):
     if workload == "function-parameters":
         return parameter_call_source()
     if workload in ["function-tables", "inferred-function-tables"]:
-        return function_reference_source(inferred=workload == "inferred-function-tables")
+        return function_reference_source(
+            inferred=workload == "inferred-function-tables"
+        )
     if workload == "continue-branches":
         return continue_fact_source(branches=1024)
     if workload == "continue-facts":
@@ -199,8 +201,7 @@ def program_source(workload):
 
     if workload == "generics":
         return source + (
-            "scene start():\n    prose:\n"
-            '        ${f0000("Ada")}|${f4093(7)}\n'
+            'scene start():\n    prose:\n        ${f0000("Ada")}|${f4093(7)}\n'
         )
 
     if workload == "branches":
@@ -267,10 +268,7 @@ def alias_graph_source(levels=28):
         for level in range(1, levels + 1)
     )
     return source + (
-        "scene start():\n"
-        "    val number: A0 = 3\n"
-        "    prose:\n"
-        "        ${number === 3}\n"
+        "scene start():\n    val number: A0 = 3\n    prose:\n        ${number === 3}\n"
     )
 
 
@@ -278,8 +276,7 @@ def alias_scope_source(levels=2048):
     """Many generic declarations share one lexical name scope."""
     source = "typealias A0<T> = T\n"
     source += "".join(
-        f"typealias A{level}<T> = A{level - 1}<T>\n"
-        for level in range(1, levels + 1)
+        f"typealias A{level}<T> = A{level - 1}<T>\n" for level in range(1, levels + 1)
     )
     return source + (
         f"scene start():\n    val number: A{levels}<Int> = 3\n"
@@ -293,7 +290,9 @@ def capture_initializer_source(count=1900):
     source += "".join(f"    var x{number:04}: Int\n" for number in range(count))
     source += "    fun initialize() -> Unit:\n"
     expression = " + ".join(["1"] * 8)
-    source += "".join(f"        x{number:04} = {expression}\n" for number in range(count))
+    source += "".join(
+        f"        x{number:04} = {expression}\n" for number in range(count)
+    )
     source += "    initialize()\n    var total = 0\n"
     source += "".join(f"    total += x{number:04}\n" for number in range(count))
     return source + "    prose:\n        ${total}\n"
@@ -301,7 +300,9 @@ def capture_initializer_source(count=1900):
 
 def shared_write_source(count=4090):
     """Update many unaliased globals, then read every updated value into a sum."""
-    declarations = "".join(f"shared var x{index:04d}: Int = {index}\n" for index in range(count))
+    declarations = "".join(
+        f"shared var x{index:04d}: Int = {index}\n" for index in range(count)
+    )
     writes = "".join(f"        x{index:04d} += 1\n" for index in range(count))
     reads = "".join(f"        total += x{index:04d}\n" for index in range(count))
     return (
@@ -316,8 +317,12 @@ def shared_write_source(count=4090):
 
 def callback_initializer_source(count=4090):
     """Initialize callback cells, then invoke every resulting callback in a sum."""
-    declarations = "".join(f"    var cb{index:04d}: () -> Int\n" for index in range(count))
-    writes = "".join(f"        cb{index:04d} = () => {index}\n" for index in range(count))
+    declarations = "".join(
+        f"    var cb{index:04d}: () -> Int\n" for index in range(count)
+    )
+    writes = "".join(
+        f"        cb{index:04d} = () => {index}\n" for index in range(count)
+    )
     reads = "".join(f"        total += cb{index:04d}()\n" for index in range(count))
     return (
         "scene start():\n"
@@ -337,9 +342,13 @@ def capture_reader_source(count=1900):
     writes = "".join(f"        x{index:04d} = {expression}\n" for index in range(count))
     reads = "".join(f"        total += x{index:04d}\n" for index in range(count))
     return (
-        "scene start():\n" + declarations
-        + "    fun initialize() -> Int:\n" + writes
-        + "        var total = 0\n" + reads + "        return total\n"
+        "scene start():\n"
+        + declarations
+        + "    fun initialize() -> Int:\n"
+        + writes
+        + "        var total = 0\n"
+        + reads
+        + "        return total\n"
         + "    val result = initialize()\n    prose:\n"
         + f"        ${{result}}|${{x{count - 1:04d}}}\n"
     )
@@ -351,16 +360,19 @@ def index_guard_source(mutable=False, helpers=64, keys=32):
     checks = "".join(
         f"    if values[{key}] == null:\n        return 0\n"
         f"    val seen{key:04d} = values.containsKey({key})\n"
-        f"    total += values[{key}].length\n" for key in range(keys)
+        f"    total += values[{key}].length\n"
+        for key in range(keys)
     )
     functions = "".join(
         f"fun f{index:04d}(values: {family}<Int, String?>) -> Int:\n"
-        "    var total = 0\n" + checks + "    return total\n" for index in range(helpers)
+        "    var total = 0\n" + checks + "    return total\n"
+        for index in range(helpers)
     )
     entries = ", ".join(f'{key}: "x"' for key in range(keys))
     prefix = "mutable " if mutable else ""
     return (
-        functions + f"scene start():\n    val values: {family}<Int, String?> = {prefix}{{{entries}}}\n"
+        functions
+        + f"scene start():\n    val values: {family}<Int, String?> = {prefix}{{{entries}}}\n"
         + f"    prose:\n        ${{f0000(values) + f{helpers - 1:04d}(values)}}\n"
     )
 
@@ -369,20 +381,23 @@ def compound_index_source(helpers=64, keys=32):
     """Compound reads survive a RHS that clears their mutable map entry."""
     reset = (
         "fun replace(values: MutableMap<Int, String?>, key: Int) -> String:\n"
-        "    values[key] = null\n    return \"!\"\n"
+        '    values[key] = null\n    return "!"\n'
     )
     updates = "".join(
         f"    if values[{key}] == null:\n        return 0\n"
         f"    values[{key}] += replace(values, {key})\n"
-        f"    total += values[{key}]!!.length\n" for key in range(keys)
+        f"    total += values[{key}]!!.length\n"
+        for key in range(keys)
     )
     functions = "".join(
         f"fun f{index:04d}(values: MutableMap<Int, String?>) -> Int:\n"
-        "    var total = 0\n" + updates + "    return total\n" for index in range(helpers)
+        "    var total = 0\n" + updates + "    return total\n"
+        for index in range(helpers)
     )
     entries = ", ".join(f'{key}: "x"' for key in range(keys))
     return (
-        reset + functions
+        reset
+        + functions
         + f"scene start():\n    val values: MutableMap<Int, String?> = mutable {{{entries}}}\n"
         + f"    prose:\n        ${{f0000(values) + f{helpers - 1:04d}(values)}}\n"
     )
@@ -401,8 +416,7 @@ def normalization_scope_source(count=1900):
         for index in range(count)
     )
     return source + (
-        "scene start():\n    prose:\n"
-        f"        ${{f0000(3) + f{count - 1:04d}(4)}}\n"
+        f"scene start():\n    prose:\n        ${{f0000(3) + f{count - 1:04d}(4)}}\n"
     )
 
 
@@ -449,15 +463,13 @@ def shared_call_source(count=1900):
 def shared_dependency_source(seeds=128, consumers=1500):
     """Many initialized values share the same broad, immutable dependency list."""
     source = "".join(
-        f"shared val seed{number:04d}: Int = {number}\n"
-        for number in range(seeds)
+        f"shared val seed{number:04d}: Int = {number}\n" for number in range(seeds)
     )
     source += "fun read() -> Int:\n    var total = 0\n"
     source += "".join(f"    total += seed{number:04d}\n" for number in range(seeds))
     source += "    return total\n"
     source += "".join(
-        f"shared val value{number:04d}: Int = read()\n"
-        for number in range(consumers)
+        f"shared val value{number:04d}: Int = read()\n" for number in range(consumers)
     )
     return source + (
         "scene start():\n    prose:\n"
@@ -471,7 +483,8 @@ def nominal_consumer_sources():
     helpers = "export shared val version: Int = 0\n"
     arguments = ", ".join("payload" for _ in range(32))
     entry = (
-        "import helpers.version\n" + record
+        "import helpers.version\n"
+        + record
         + "scene start():\n    val record = Record()\n"
         + "    val payload: List<Int> = [version]\n"
         + f"    val values = record.m0000({arguments})\n"
@@ -483,7 +496,9 @@ def nominal_consumer_sources():
 def method_body_source(methods=512, parameters=16):
     """Method-local closures retain parameters and an implicit receiver."""
     header = ", ".join(f"p{number:02d}: Int" for number in range(parameters))
-    expression = " + ".join(f"p{number:02d}" for number in range(parameters)) + " + offset"
+    expression = (
+        " + ".join(f"p{number:02d}" for number in range(parameters)) + " + offset"
+    )
     source = "data class Record:\n    val offset: Int = 0\n"
     source += "".join(
         f"    fun m{number:04d}({header}) -> Int:\n"
@@ -512,7 +527,7 @@ def named_constructor_source(fields=2048, calls=16):
         )
         source += "    )\n"
     return source + (
-        "    choice:\n        option \"Inspect records\":\n            Unit\n"
+        '    choice:\n        option "Inspect records":\n            Unit\n'
         "    prose:\n"
         f"        ${{record00.field0000}}|${{record{calls - 1:02d}.field{fields - 1:04d}}}\n"
     )
@@ -526,7 +541,9 @@ def calling_default_source(fields=2048):
         "fun initial() -> Int:\n    calls += 1\n    return calls * delta\n"
         "data class Record:\n"
     )
-    source += "".join(f"    val field{number:04d}: Int = initial()\n" for number in range(fields))
+    source += "".join(
+        f"    val field{number:04d}: Int = initial()\n" for number in range(fields)
+    )
     return source + (
         "scene start():\n    val record = Record()\n"
         '    choice:\n        option "Inspect defaults":\n            Unit\n'
@@ -538,8 +555,7 @@ def calling_default_source(fields=2048):
 def forward_alias_source(aliases=32768):
     """A forward-only alias chain whose final scalar changes across an edit."""
     source = "".join(
-        f"typealias A{index:05} = A{index + 1:05}\n"
-        for index in range(aliases - 1)
+        f"typealias A{index:05} = A{index + 1:05}\n" for index in range(aliases - 1)
     )
     source += f"typealias A{aliases - 1:05} = Int\n"
     return source + (
@@ -565,7 +581,7 @@ def conditional_chain_source(branches=8192):
         "    var result = 0\n"
     )
     source += "".join(
-        f'    {"if" if index == 0 else "elif"} matches(selector, {index}):\n'
+        f"    {'if' if index == 0 else 'elif'} matches(selector, {index}):\n"
         f"        result = {index}\n"
         for index in range(branches)
     )
@@ -598,7 +614,11 @@ def _fact_prefix(facts, delayed):
 def _conditional_fact_branches(branches, indentation="    ", transfer=None):
     source = ""
     for index in range(branches + 1):
-        header = f'{"if" if index == 0 else "elif"} selector == {index}' if index < branches else "else"
+        header = (
+            f"{'if' if index == 0 else 'elif'} selector == {index}"
+            if index < branches
+            else "else"
+        )
         source += f"{indentation}{header}:\n{indentation}    result = {index}\n"
         if transfer:
             source += f"{indentation}    {transfer}\n"
@@ -615,7 +635,9 @@ def _fact_checkpoint():
     )
 
 
-def assignment_fact_source(facts=4000, branches=128, *, delayed=False, form="conditional"):
+def assignment_fact_source(
+    facts=4000, branches=128, *, delayed=False, form="conditional"
+):
     """Keep named values live, sum every value, then join branch assignment facts."""
     if form not in ["conditional", "when", "choice"]:
         raise ValueError("unknown branch form")
@@ -780,13 +802,19 @@ def computed_index_guard_source(helpers=64, keys=32):
     )
     functions = "".join(
         f"fun f{index:04d}(values: MutableMap<String, String?>, var prefix: String) -> Int:\n"
-        "    var total = 0\n" + checks + "    return total\n" for index in range(helpers)
+        "    var total = 0\n" + checks + "    return total\n"
+        for index in range(helpers)
     )
     entries = ", ".join(f'"key{key}": "x"' for key in range(keys))
-    calls = ",\n".join(f'        f{index:04d}(values, "key")' for index in range(helpers))
+    calls = ",\n".join(
+        f'        f{index:04d}(values, "key")' for index in range(helpers)
+    )
     return (
-        functions + f"scene start():\n    val values: MutableMap<String, String?> = mutable {{{entries}}}\n"
-        + "    val results = [\n" + calls + "\n    ]\n"
+        functions
+        + f"scene start():\n    val values: MutableMap<String, String?> = mutable {{{entries}}}\n"
+        + "    val results = [\n"
+        + calls
+        + "\n    ]\n"
         + "    var total = 0\n    for result in results:\n        total += result\n"
         + '    choice:\n        option "Inspect":\n            Unit\n'
         + "    prose:\n        ${total}\n"
@@ -810,15 +838,21 @@ def text_computed_index_guard_source(helpers=64, keys=24):
         "    alphabet: A,\n"
         "    offset: I\n"
         ") -> Int:\n"
-        "    var total = 0\n" + checks + "    return total\n" for index in range(helpers)
+        "    var total = 0\n" + checks + "    return total\n"
+        for index in range(helpers)
     )
     alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:keys]
     entries = ", ".join(f'"key{letter}": "x"' for letter in alphabet)
-    calls = ",\n".join(f'        f{index:04d}(values, "key", alphabet, 0)' for index in range(helpers))
+    calls = ",\n".join(
+        f'        f{index:04d}(values, "key", alphabet, 0)' for index in range(helpers)
+    )
     return (
-        functions + f"scene start():\n    val values: MutableMap<String, String?> = mutable {{{entries}}}\n"
+        functions
+        + f"scene start():\n    val values: MutableMap<String, String?> = mutable {{{entries}}}\n"
         + f'    val alphabet = "{alphabet}"\n'
-        + "    val results = [\n" + calls + "\n    ]\n"
+        + "    val results = [\n"
+        + calls
+        + "\n    ]\n"
         + "    var total = 0\n    for result in results:\n        total += result\n"
         + '    choice:\n        option "Inspect":\n            Unit\n'
         + "    prose:\n        ${total}\n"
@@ -842,18 +876,22 @@ def projected_input_source():
     ]
     for index in range(1024):
         name = f"result{index:04d}"
-        lines.extend([
-            f"    val {name} = hidden.map(::record)",
-            f"    results.add({name})",
-            f"    total += {name}",
-        ])
-    lines.extend([
-        "    choice:",
-        '        option "Mapped ${calls}":',
-        "            Unit",
-        "    prose:",
-        "        ${calls}|${total}|${results.size}|${results[0]}|${results[1023]}",
-    ])
+        lines.extend(
+            [
+                f"    val {name} = hidden.map(::record)",
+                f"    results.add({name})",
+                f"    total += {name}",
+            ]
+        )
+    lines.extend(
+        [
+            "    choice:",
+            '        option "Mapped ${calls}":',
+            "            Unit",
+            "    prose:",
+            "        ${calls}|${total}|${results.size}|${results[0]}|${results[1023]}",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -867,21 +905,25 @@ def single_use_val_source():
     for index in range(1024):
         name = f"x{index:04d}"
         value = "1" if index == 0 else f"x{index - 1:04d} + 1"
-        lines.extend([
-            f"    val {name}: Int",
-            f"    fun initialize{index:04d}():",
-            f"        {name} = {value}",
-            "        count = count + 1",
-            f"        total = total + {name}",
-            f"    initialize{index:04d}()",
-        ])
-    lines.extend([
-        "    choice:",
-        '        option "Initialized ${count}":',
-        "            Unit",
-        "    prose:",
-        "        ${x0000}|${x1023}|${count}|${total}",
-    ])
+        lines.extend(
+            [
+                f"    val {name}: Int",
+                f"    fun initialize{index:04d}():",
+                f"        {name} = {value}",
+                "        count = count + 1",
+                f"        total = total + {name}",
+                f"    initialize{index:04d}()",
+            ]
+        )
+    lines.extend(
+        [
+            "    choice:",
+            '        option "Initialized ${count}":',
+            "            Unit",
+            "    prose:",
+            "        ${x0000}|${x1023}|${count}|${total}",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -921,15 +963,20 @@ def repeated_forward_val_source():
         store = f"            {cell} = value + increment\n"
         if any(source.count(part) != 1 for part in [call, header, store]):
             raise ValueError("expected one call, header, and store before expansion")
-        source = source.replace(call, (
-            "        if count % 2 == 0:\n"
-            f"            {name}(count, increment = 0)\n"
-            "        else:\n"
-            f"            {name}(count, increment = 0)\n"
-            + call
-        ), 1)
+        source = source.replace(
+            call,
+            (
+                "        if count % 2 == 0:\n"
+                f"            {name}(count, increment = 0)\n"
+                "        else:\n"
+                f"            {name}(count, increment = 0)\n" + call
+            ),
+            1,
+        )
         source = source.replace(header, header.replace("):\n", ") -> String:\n"), 1)
-        source = source.replace(store, store + f'            return "ready ${{{cell}}}"\n', 1)
+        source = source.replace(
+            store, store + f'            return "ready ${{{cell}}}"\n', 1
+        )
     return source
 
 
@@ -944,14 +991,22 @@ def loop_forward_val_source():
         header = f"        fun {name}(value: Int, increment: Int = 1):\n"
         store = f"            {cell} = value + increment\n"
         if any(source.count(part) != 1 for part in [call, header, store]):
-            raise ValueError("expected one call, header, and store before loop expansion")
-        source = source.replace(call, (
-            f"        for {iteration} in count..count:\n"
-            f"            {name}({iteration})\n"
-            "            break\n"
-        ), 1)
+            raise ValueError(
+                "expected one call, header, and store before loop expansion"
+            )
+        source = source.replace(
+            call,
+            (
+                f"        for {iteration} in count..count:\n"
+                f"            {name}({iteration})\n"
+                "            break\n"
+            ),
+            1,
+        )
         source = source.replace(header, header.replace("):\n", ") -> String:\n"), 1)
-        source = source.replace(store, store + f'            return "ready ${{{cell}}}"\n', 1)
+        source = source.replace(
+            store, store + f'            return "ready ${{{cell}}}"\n', 1
+        )
     return source
 
 
@@ -971,11 +1026,17 @@ def stored_range_val_source():
         progression = f"progression{index:04d}"
         header = f"        for {iteration} in count..count:\n"
         if source.count(header) != 1:
-            raise ValueError("expected one direct range loop before storing its progression")
-        source = source.replace(header, (
-            f"        val {progression} = (count..count) step 1\n"
-            f"        for {iteration} in {progression}:\n"
-        ), 1)
+            raise ValueError(
+                "expected one direct range loop before storing its progression"
+            )
+        source = source.replace(
+            header,
+            (
+                f"        val {progression} = (count..count) step 1\n"
+                f"        for {iteration} in {progression}:\n"
+            ),
+            1,
+        )
     return source
 
 
@@ -989,7 +1050,10 @@ def unit_forward_val_source():
     declaration = "shared val readers: MutableList<() -> Int> = mutable []\n"
     if source.count(declaration) != 1:
         raise ValueError("expected the reader declaration")
-    source = source.replace(declaration, declaration + "shared val initialized: MutableList<Unit> = mutable []\n")
+    source = source.replace(
+        declaration,
+        declaration + "shared val initialized: MutableList<Unit> = mutable []\n",
+    )
     for index in range(1024):
         call = _grouped_initializer_call(f"initialize{index:04d}", index)
         original = f"        {call}\n"
@@ -1015,8 +1079,19 @@ def grouped_forward_val_source():
 def scoped_val_source(mode="scoped"):
     """Keep each initialized cell alive; selected modes also retain call results."""
     if mode not in (
-        "scoped", "parameter", "structured", "generic", "returning", "expression", "defaults",
-        "assignment", "indexed", "compound", "operand", "prose", "forward",
+        "scoped",
+        "parameter",
+        "structured",
+        "generic",
+        "returning",
+        "expression",
+        "defaults",
+        "assignment",
+        "indexed",
+        "compound",
+        "operand",
+        "prose",
+        "forward",
     ):
         raise ValueError("unknown scoped-val workload mode: " + mode)
     prose = mode == "prose"
@@ -1054,8 +1129,12 @@ def scoped_val_source(mode="scoped"):
     ]
     if returning:
         initial_value = "prefix " if compound else "pending"
-        initial = ", ".join(f'"{initial_value}"' for _ in range(1024)) if indexed else ""
-        lines.insert(-1, f"shared val statuses: MutableList<String> = mutable [{initial}]")
+        initial = (
+            ", ".join(f'"{initial_value}"' for _ in range(1024)) if indexed else ""
+        )
+        lines.insert(
+            -1, f"shared val statuses: MutableList<String> = mutable [{initial}]"
+        )
     if defaults:
         lines[-1:-1] = [
             "shared var defaultCalls: Int = 0",
@@ -1082,16 +1161,21 @@ def scoped_val_source(mode="scoped"):
         name = f"x{index:04d}"
         body = (
             [
-                "            if value == value:" if generic else "            if value % 2 == 0:",
+                "            if value == value:"
+                if generic
+                else "            if value % 2 == 0:",
                 f"                {name} = {value}",
                 "            else:",
                 f"                {name} = {value}",
             ]
-            if structured else [f"            {name} = {value}"]
+            if structured
+            else [f"            {name} = {value}"]
         )
         header = f"        fun {type_parameters}initialize{index:04d}({parameters}){return_annotation}:"
         if mode == "expression":
-            header = f"        fun initialize{index:04d}({parameters}) = if value % 2 == 0:"
+            header = (
+                f"        fun initialize{index:04d}({parameters}) = if value % 2 == 0:"
+            )
             body = [
                 f"            {name} = {value}",
                 f'            "ready ${{{name}}}"',
@@ -1119,32 +1203,40 @@ def scoped_val_source(mode="scoped"):
             call = f"status{index:04d} = {call}"
         elif returning:
             call = f"val status{index:04d} = {call}"
-        lines.extend([
-            "    if true:",
-            f"        val {name}: Int",
-            *([f"        {call}"] if mode == "forward" else []),
-            header,
-            *body,
-            f"        fun read{index:04d}() -> Int = {name}",
-            *declarations,
-            *([f"        {call}"] if mode != "forward" else []),
-            *([f"        statuses.add(status{index:04d})"] if returning and not indexed and not prose else []),
-            f"        readers.add(::read{index:04d})",
-            "        count += 1",
-            f"        total += {name}",
-        ])
+        lines.extend(
+            [
+                "    if true:",
+                f"        val {name}: Int",
+                *([f"        {call}"] if mode == "forward" else []),
+                header,
+                *body,
+                f"        fun read{index:04d}() -> Int = {name}",
+                *declarations,
+                *([f"        {call}"] if mode != "forward" else []),
+                *(
+                    [f"        statuses.add(status{index:04d})"]
+                    if returning and not indexed and not prose
+                    else []
+                ),
+                f"        readers.add(::read{index:04d})",
+                "        count += 1",
+                f"        total += {name}",
+            ]
+        )
     output = "        ${readers[0]()}|${readers[1023]()}|${count}|${total}"
     if returning:
         output += "|${statuses[0]}|${statuses[1023]}"
     if defaults:
         output += "|${defaultCalls}"
-    lines.extend([
-        "    choice:",
-        '        option "Retained ${count}":',
-        "            Unit",
-        "    prose:",
-        output,
-    ])
+    lines.extend(
+        [
+            "    choice:",
+            '        option "Retained ${count}":',
+            "            Unit",
+            "    prose:",
+            output,
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -1157,10 +1249,11 @@ def immutable_list_val_source():
         header = f"        for {iteration} in count..count:\n"
         if source.count(header) != 1:
             raise ValueError("expected one direct range loop before storing its list")
-        source = source.replace(header, (
-            f"        val {items} = [count]\n"
-            f"        for {iteration} in {items}:\n"
-        ), 1)
+        source = source.replace(
+            header,
+            (f"        val {items} = [count]\n        for {iteration} in {items}:\n"),
+            1,
+        )
     return source
 
 
@@ -1171,13 +1264,19 @@ def exclusive_forward_val_source():
         name = f"initialize{index:04d}"
         call = f"        {name}(count)\n"
         if source.count(call) != 1:
-            raise ValueError("expected one forward call before splitting its alternatives")
-        source = source.replace(call, (
-            "        if count % 2 == 0:\n"
-            f"            {name}(count)\n"
-            "        else:\n"
-            f"            {name}(count, increment = 1)\n"
-        ), 1)
+            raise ValueError(
+                "expected one forward call before splitting its alternatives"
+            )
+        source = source.replace(
+            call,
+            (
+                "        if count % 2 == 0:\n"
+                f"            {name}(count)\n"
+                "        else:\n"
+                f"            {name}(count, increment = 1)\n"
+            ),
+            1,
+        )
     return source
 
 
@@ -1189,10 +1288,16 @@ def loop_exit_val_source():
         iteration = f"iteration{index:04d}"
         call = f"        {name}(count)\n"
         if source.count(call) != 1:
-            raise ValueError("expected one forward call before adding its terminal traversal")
-        source = source.replace(call, (
-            f"        for {iteration} in count..(count + 1):\n"
-            f"            {name}({iteration})\n"
-            "            break\n"
-        ), 1)
+            raise ValueError(
+                "expected one forward call before adding its terminal traversal"
+            )
+        source = source.replace(
+            call,
+            (
+                f"        for {iteration} in count..(count + 1):\n"
+                f"            {name}({iteration})\n"
+                "            break\n"
+            ),
+            1,
+        )
     return source

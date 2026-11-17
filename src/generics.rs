@@ -1,3 +1,5 @@
+pub(crate) mod call_constraints;
+
 mod substitution;
 pub use substitution::{signature, substitute};
 
@@ -5,7 +7,7 @@ mod constraints;
 pub(crate) use constraints::widen_arguments;
 
 mod inference;
-pub(crate) use inference::{infer, refine_nonnull_arguments};
+pub(crate) use inference::{infer, infer_partial, refine_nonnull_arguments};
 
 mod bounds;
 pub(crate) use bounds::{member_view, operation_view};

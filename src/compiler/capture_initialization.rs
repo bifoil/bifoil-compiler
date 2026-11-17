@@ -440,6 +440,7 @@ fn control(op: &Op) -> Control {
         | Op::Unused { .. }
         | Op::Unary { .. }
         | Op::Binary { .. }
+        | Op::ExactCompare { .. }
         | Op::Enter
         | Op::Exit
         | Op::Specialize { .. }

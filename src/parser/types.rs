@@ -1,15 +1,15 @@
 //! Type annotation grammar.
 
-use super::Cursor;
+use super::{Cursor, ParseError};
 use crate::lexer::Token;
 use crate::model::Type;
 
 impl Cursor {
-    pub(super) fn ty(&mut self) -> Result<Type, String> {
+    pub(super) fn ty(&mut self) -> Result<Type, ParseError> {
         self.ty_inner(0)
     }
 
-    pub(super) fn ty_inner(&mut self, depth: usize) -> Result<Type, String> {
+    pub(super) fn ty_inner(&mut self, depth: usize) -> Result<Type, ParseError> {
         if depth > 32 {
             return Err("type nesting budget exceeded".into());
         }
@@ -67,7 +67,7 @@ impl Cursor {
                 if !args.is_empty()
                     && ["Int", "Float", "Boolean", "String", "Char", "Unit", "Nothing", "Any"].contains(&name.as_str())
                 {
-                    return Err(format!("type {name} does not accept type arguments"));
+                    return Err(format!("type {name} does not accept type arguments").into());
                 }
                 match name.as_str() {
                     "Int" => Type::Int,

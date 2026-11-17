@@ -67,7 +67,7 @@ fn known_shape(expression: &Expr, scopes: &ScopeStack, values: &ImmutableValues)
         Expr::String(value) | Expr::Char(value) => !value.is_empty(),
         Expr::Collection { entries, .. } => !entries.is_empty(),
         Expr::Format(parts) => parts.iter().any(|part| known_shape(&part.value, scopes, values)),
-        Expr::Binary(operator, left, right) => match operator.as_str() {
+        Expr::Binary(operator, left, right, ..) => match operator.as_str() {
             ".." | "..<" => true,
             "downTo" => constants::constant_comparison(">=", left, right) == Some(true),
             // A valid positive step retains the first value of a nonempty input.

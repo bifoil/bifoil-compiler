@@ -27,11 +27,15 @@ arguments.add_argument("--alphabet", choices=["ascii", "emoji"], default="ascii"
 arguments.add_argument("--literal-bytes", type=int, default=900000)
 options = arguments.parse_args()
 if not 8 <= options.literal_bytes <= 1048000:
-    arguments.error("literal bytes must be between 8 and the current source-file limit minus header space")
+    arguments.error(
+        "literal bytes must be between 8 and the current source-file limit minus header space"
+    )
 character = "a" if options.alphabet == "ascii" else "😀"
 width = len(character.encode())
 if (options.literal_bytes - 8) % width:
-    arguments.error("literal byte count must fit the prefix, suffix, and selected scalar width")
+    arguments.error(
+        "literal byte count must fit the prefix, suffix, and selected scalar width"
+    )
 payload = "START" + character * ((options.literal_bytes - 8) // width) + "END"
 root = options.output_directory.resolve()
 root.mkdir(parents=True)
@@ -73,11 +77,16 @@ for phase, result in report["runs"].items():
         raise SystemExit("literal workload failed or exceeded the memory contract")
     if phase in ["unchanged", "literal_edit"] and result["wall_seconds"] >= 10:
         raise SystemExit("incremental literal workload exceeded ten seconds")
-    expected = "0 compiled, 1 reused" if phase == "unchanged" else "1 compiled, 0 reused"
+    expected = (
+        "0 compiled, 1 reused" if phase == "unchanged" else "1 compiled, 0 reused"
+    )
     if phase != "clean" and expected not in result["stdout"]:
         raise SystemExit("unexpected literal workload cache result")
 runs = report["runs"]
-if len({runs[phase]["output_sha256"] for phase in ["clean", "populate", "unchanged"]}) != 1:
+if (
+    len({runs[phase]["output_sha256"] for phase in ["clean", "populate", "unchanged"]})
+    != 1
+):
     raise SystemExit("unchanged literal builds produced different output")
 if runs["literal_edit"]["output_sha256"] == runs["unchanged"]["output_sha256"]:
     raise SystemExit("literal edit did not change the output")

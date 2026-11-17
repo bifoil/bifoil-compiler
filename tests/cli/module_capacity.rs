@@ -33,7 +33,7 @@ fn write_scenes(project: &Project, count: usize) {
 fn complete_module_graph_fits_and_rejects_the_next_reachable_module() {
     let project = Project::new();
     project.write("bifoil.toml", "entry = \"main.start\"\n");
-    write_scenes(&project, 510);
+    write_scenes(&project, 1022);
     let built = project.run(&["build", ".", "--out", "startup.txt", "--clean"]);
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let completed = fs::read_to_string(project.0.join("startup.txt")).unwrap();
@@ -44,8 +44,8 @@ fn complete_module_graph_fits_and_rejects_the_next_reachable_module() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(program["modules"].as_object().unwrap().len(), 512);
-    write_scenes(&project, 511);
+    assert_eq!(program["modules"].as_object().unwrap().len(), 1024);
+    write_scenes(&project, 1023);
     let rejected = project.run(&["build", ".", "--out", "startup.txt", "--clean"]);
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("module count budget exceeded"));

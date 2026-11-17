@@ -1,12 +1,12 @@
 //! Ordinary executable statements and conditional chains.
 
-use super::{Cursor, Parser, template};
+use super::{Cursor, ParseError, Parser, template};
 use crate::lexer::{Token, indentation, name};
 use crate::syntax::{ConditionalBranch, Expr, OptionAst, Statement, StatementKind};
 
 impl Parser<'_> {
-    pub(super) fn parse_statement(&mut self) -> Result<Statement, String> {
-        let line = self.line_index + 1;
+    pub(super) fn parse_statement(&mut self) -> Result<Statement, ParseError> {
+        let line = self.line();
         let level = indentation(&self.source_lines[self.line_index]).0;
         let mut cursor = self.statement_cursor()?;
         let loop_label = if cursor.starts_loop_label() {
@@ -16,6 +16,13 @@ impl Parser<'_> {
         } else {
             None
         };
+        if loop_label.is_some()
+            && !["for", "while", "do"]
+                .iter()
+                .any(|keyword| cursor.at_keyword(0, keyword))
+        {
+            return Err(ParseError::from("loop labels require for, while, or do").at(line));
+        }
         let kind = if cursor.kw("typealias") {
             StatementKind::Alias(self.parse_alias(cursor, false)?)
         } else if cursor.tokens.first().is_some_and(|t| name(t, "fun"))
@@ -26,6 +33,14 @@ impl Parser<'_> {
                 kind: StatementKind::Function(self.parse_function(cursor, false)?),
                 line,
             });
+        } else if cursor.kw("shared") {
+            let mut value = self.parse_variable(cursor)?;
+            let StatementKind::Variable { shared, .. } = &mut value else {
+                return Err(self.error("shared declarations require initializers"));
+            };
+            *shared = true;
+            self.line_index += 1;
+            value
         } else if cursor.tokens.first().is_some_and(|t| name(t, "val") || name(t, "var")) {
             let value = self.parse_variable(cursor)?;
             self.line_index += 1;
@@ -107,7 +122,7 @@ impl Parser<'_> {
             cursor.need(":").map_err(|e| self.error(e))?;
             cursor.end().map_err(|e| self.error(e))?;
             self.line_index += 1;
-            self.skip_blank();
+            self.skip_nested_blank(level);
             let mut options = Vec::new();
             let mut fallback = None;
             while self.line_index < self.source_lines.len()
@@ -116,7 +131,7 @@ impl Parser<'_> {
                 if indentation(&self.source_lines[self.line_index]).0 != level + 1 {
                     return Err(self.error("invalid option indentation"));
                 }
-                let option_line = self.line_index + 1;
+                let option_line = self.line();
                 let mut option = self.statement_cursor()?;
                 if option.kw("else") {
                     option.need(":").map_err(|e| self.error(e))?;
@@ -137,8 +152,9 @@ impl Parser<'_> {
                         return Err(self.error("option label requires a quoted String"));
                     };
                     let label_line = option.line();
+                    let label_indent = option.indent();
                     option.position += 1;
-                    let label = template(&raw, 0, label_line).map_err(|e| self.error(e))?;
+                    let label = template(&raw, 0, label_line, label_indent).map_err(|e| self.error(e))?;
                     let (visible_line, visible) = if option.kw("if") {
                         let line = option.line();
                         (line, option.expr(0, 0).map_err(|e| self.error(e))?)
@@ -167,7 +183,7 @@ impl Parser<'_> {
                         line: option_line,
                     });
                 }
-                self.skip_blank();
+                self.skip_nested_blank(level);
                 if options.len() > 256 {
                     return Err(self.error("choice option budget exceeded"));
                 }
@@ -208,7 +224,7 @@ impl Parser<'_> {
         mut cursor: Cursor,
         level: usize,
         line: usize,
-    ) -> Result<Statement, String> {
+    ) -> Result<Statement, ParseError> {
         let mut branches = Vec::new();
         let mut no = Vec::new();
         let mut branch_line = line;
@@ -222,8 +238,10 @@ impl Parser<'_> {
                 body: self.parse_block(level)?,
                 line: branch_line,
             });
+            let after_body = self.line_index;
             self.skip_blank();
             if !self.branch_follows(level) {
+                self.line_index = after_body;
                 break;
             }
             let mut next = self.statement_cursor()?;

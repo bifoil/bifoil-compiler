@@ -58,6 +58,18 @@ pub(super) fn collection_type(
     if args.len() != count {
         return Err("invalid collection type arguments".into());
     }
+    if context.is_some() {
+        // A contextual element type describes construction, not proof that its
+        // supplied expressions can inhabit it. Check nested literals before a
+        // candidate is selected, using their actual source evaluation order.
+        let mut scope = env.clone();
+        for (key, value) in entries {
+            if let Some(key) = key {
+                check_collection_entry(key, &args[0], &mut scope)?;
+            }
+            check_collection_entry(value, args.last().unwrap(), &mut scope)?;
+        }
+    }
     if (family == "Set" || family == "Map") && !args[0].stable_key() {
         return Err("set elements and map keys require StableKey".into());
     }
@@ -65,6 +77,15 @@ pub(super) fn collection_type(
         &format!("{}{family}", if mutable { "Mutable" } else { "" }),
         std::mem::take(&mut args),
     ))
+}
+
+fn check_collection_entry(value: &Expr, expected: &Type, env: &mut ScopeStack) -> Result<(), String> {
+    let actual = infer_as(value, env, Some(expected))?;
+    if !expected.accepts(&actual) {
+        return Err(format!("expected {expected}, found {actual}"));
+    }
+    super::return_inference::normal_completion(value, env)?;
+    Ok(())
 }
 
 pub(super) fn infer(expr: &Expr, env: &ScopeStack) -> Result<Type, String> {
@@ -80,7 +101,7 @@ pub(super) fn infer_as(expr: &Expr, env: &ScopeStack, expected: Option<&Type>) -
     }
     if let Some(sym) = static_symbol(expr, env) {
         return Ok(if constant_case(&sym) {
-            sym.signature().unwrap().result.clone()
+            super::members::constant_case_type(&sym, expected)?
         } else {
             sym.ty
         });
@@ -88,7 +109,7 @@ pub(super) fn infer_as(expr: &Expr, env: &ScopeStack, expected: Option<&Type>) -
     if let Expr::Name(n) = expr
         && let Some(s) = enum_shorthand(n, env, expected)?
     {
-        return Ok(s.signature().unwrap().result.clone());
+        return super::members::constant_case_type(&s, expected);
     }
     match expr {
         Expr::TypeApply { .. } => specialize_signature(expr, None, expected, env)?
@@ -117,7 +138,7 @@ pub(super) fn infer_as(expr: &Expr, env: &ScopeStack, expected: Option<&Type>) -
             .map(|s| s.value_type(expected))
             .ok_or_else(|| format!("unknown name '{n}'")),
         Expr::Group(e) => infer_as(e, env, expected),
-        Expr::Unary(op, e) => {
+        Expr::Unary(op, e, ..) => {
             if op == "-" && matches!(e.as_ref(), Expr::Int(2147483648)) {
                 return Ok(Type::Int);
             }
@@ -132,7 +153,7 @@ pub(super) fn infer_as(expr: &Expr, env: &ScopeStack, expected: Option<&Type>) -
                 Err(format!("invalid unary '{op}' for {ty}"))
             }
         }
-        Expr::Binary(op, a, b) => {
+        Expr::Binary(op, a, b, ..) => {
             let left = infer(a, env)?;
             let mut rhs = env.clone();
             super::return_inference::normal_completion(a, &mut rhs)?;
@@ -146,9 +167,22 @@ pub(super) fn infer_as(expr: &Expr, env: &ScopeStack, expected: Option<&Type>) -
             } else {
                 infer(b, &rhs)?
             };
-            binary_type(op, &left, &right)
+            let joined = binary_type(op, &left, &right);
+            if op == "?:"
+                && joined.is_err()
+                && let Some(expected) = expected
+                && expected.accepts(&left.non_null())
+                && expected.accepts(&right)
+            {
+                // An explicit result context may request approved conversions.
+                // Without it, common-type inference never invents family copies
+                // or a universal Any fallback.
+                Ok(expected.clone())
+            } else {
+                joined
+            }
         }
-        Expr::Call(callee, args) | Expr::SafeCall(callee, args) => {
+        Expr::Call(callee, args, ..) | Expr::SafeCall(callee, args, ..) => {
             let ty = if let Some(specialization) = specialize_signature(callee, Some(args), expected, env)? {
                 specialization.signature.ty()
             } else {
@@ -174,7 +208,9 @@ pub(super) fn infer_as(expr: &Expr, env: &ScopeStack, expected: Option<&Type>) -
             mutable,
             entries,
         } => collection_type(family, *mutable, entries, env, expected),
-        Expr::Member { receiver, name, safe } => {
+        Expr::Member {
+            receiver, name, safe, ..
+        } => {
             let ty = infer(receiver, env)?;
             if !safe && ty.permits_null() {
                 return Err("nullable member receiver requires ?. or a null check".into());
@@ -185,7 +221,7 @@ pub(super) fn infer_as(expr: &Expr, env: &ScopeStack, expected: Option<&Type>) -
             let refined = super::field_proofs::fact(expr, env);
             Ok(super::bindings::contextual_type(&declared, refined.as_ref(), expected))
         }
-        Expr::BoundReference(receiver, name) => {
+        Expr::BoundReference(receiver, name, ..) => {
             let ty = infer(receiver, env)?;
             if ty.permits_null() {
                 return Err("nullable bound receiver requires a null check".into());
@@ -203,12 +239,14 @@ pub(super) fn infer_as(expr: &Expr, env: &ScopeStack, expected: Option<&Type>) -
             let refined = super::field_proofs::fact(expr, env);
             Ok(super::bindings::contextual_type(&declared, refined.as_ref(), expected))
         }
-        Expr::Unwrap(e) => {
+        Expr::Unwrap(e, ..) => {
             let source_expected = expected.map(Type::nullable);
             Ok(infer_as(e, env, source_expected.as_ref())?.non_null())
         }
         Expr::Spread(e) => infer(e, env),
-        Expr::TypeOp { value, operator, ty } => {
+        Expr::TypeOp {
+            value, operator, ty, ..
+        } => {
             crate::declarations::validate_type(ty)?;
             let actual = infer(value, env)?;
             if operator == "is" || operator == "!is" {

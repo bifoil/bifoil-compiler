@@ -3,12 +3,12 @@
 //! Both discovery and full parsing use the same import grammar. Logical lines
 //! hide triple-quoted contents before inspecting unindented import headers.
 
-use super::{Cursor, layout::logical_lines};
+use super::{Cursor, ParseError, layout::logical_lines};
 use crate::lexer::{indentation, lex};
 use crate::model::MAX_SOURCE;
 use crate::syntax::Import;
 
-pub(super) fn parse(cursor: &mut Cursor) -> Result<Import, String> {
+pub(super) fn parse(cursor: &mut Cursor) -> Result<Import, ParseError> {
     let mut pieces = vec![cursor.ident()?];
     while cursor.sym(".") {
         pieces.push(cursor.ident()?);
@@ -47,10 +47,10 @@ pub(crate) fn discover(source: &str, file: &str) -> Result<Vec<Import>, String> 
         if rest.starts_with(|ch: char| ch.is_ascii_alphanumeric() || ch == '_') {
             continue;
         }
-        let error = |message| format!("{file}:{}: {message}", row + 1);
+        let error = |message: String| format!("{file}:{}: {message}", row + 1);
         let mut cursor = Cursor::new(lex(text).map_err(error)?);
         if cursor.kw("import") {
-            imports.push(parse(&mut cursor).map_err(error)?);
+            imports.push(parse(&mut cursor).map_err(|message| error(message.to_string()))?);
         }
     }
     Ok(imports)

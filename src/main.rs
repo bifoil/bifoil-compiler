@@ -38,8 +38,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 // Aggregate source/artifact bytes; each file retains its independent guard.
-const MAX_INPUT: u64 = 64 * 1024 * 1024;
-const MAX_MODULES: usize = 512;
+const MAX_INPUT: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_MODULES: usize = 1024;
 
 thread_local! {
     static INCREMENTAL_DEADLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

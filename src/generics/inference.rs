@@ -18,13 +18,30 @@ pub(crate) fn infer(
     InferenceQuery::default().infer(pattern, actual, inferable, args)
 }
 
+/// Partial reference contexts may contain another call's still-unresolved
+/// parameters. They provide shape, but must never become selected arguments.
+pub(crate) fn infer_partial(
+    pattern: &Type,
+    actual: &Type,
+    inferable: &[GenericParam],
+    args: &mut BTreeMap<String, Type>,
+    unresolved: &[String],
+) -> Result<(), String> {
+    InferenceQuery {
+        unresolved,
+        ..Default::default()
+    }
+    .infer(pattern, actual, inferable, args)
+}
+
 /// Repeating an identical structural constraint adds no new information.
 /// Each supplied argument starts a fresh query, retaining the caller's joins.
 #[derive(Default)]
-struct InferenceQuery {
+struct InferenceQuery<'a> {
+    unresolved: &'a [String],
     checked: BTreeSet<(RetainedNode, RetainedNode)>,
 }
-impl InferenceQuery {
+impl InferenceQuery<'_> {
     fn infer(
         &mut self,
         pattern: &Type,
@@ -33,7 +50,10 @@ impl InferenceQuery {
         args: &mut BTreeMap<String, Type>,
     ) -> Result<(), String> {
         // A projection hides an argument; it cannot select a concrete instantiation.
-        if *actual == Type::Star {
+        if *actual == Type::Star
+            || matches!(actual, Type::Parameter { name, .. }
+            if self.unresolved.contains(name))
+        {
             return Ok(());
         }
         // One argument may repeat entire callable or scene subgraphs. Cache
@@ -65,6 +85,12 @@ impl InferenceQuery {
     ) -> Result<(), String> {
         match pattern {
             Type::Parameter { name, .. } if inferable.iter().any(|parameter| parameter.name == *name) => {
+                if !self.unresolved.is_empty()
+                    && actual
+                        .any_node(|node| matches!(node, Type::Parameter { name, .. } if self.unresolved.contains(name)))
+                {
+                    return Ok(());
+                }
                 // Preserve the supplied parameter's identity. Only structural
                 // patterns below may inspect its declared upper-bound shape.
                 let joined = if let Some(old) = args.get(name) {

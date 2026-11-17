@@ -1,18 +1,26 @@
 //! Quoted text escapes and interpolation.
 
-use super::Cursor;
+use super::ParseError;
+
+use super::fragments;
 use crate::lexer::interpolation_end;
 use crate::syntax::{Expr, TemplatePart};
 
-pub(super) fn template(raw: &str, depth: usize, source_line: usize) -> Result<Expr, String> {
-    parse_template(raw, depth, source_line, false)
+pub(super) fn template(raw: &str, depth: usize, source_line: usize, indent: usize) -> Result<Expr, ParseError> {
+    parse_template(raw, depth, source_line, indent, false)
 }
 
-pub(super) fn prose_template(raw: &str, depth: usize, source_line: usize) -> Result<Expr, String> {
-    parse_template(raw, depth, source_line, true)
+pub(super) fn prose_template(raw: &str, depth: usize, source_line: usize) -> Result<Expr, ParseError> {
+    parse_template(raw, depth, source_line, crate::lexer::indentation(raw).0, true)
 }
 
-fn parse_template(raw: &str, depth: usize, source_line: usize, directive_escape: bool) -> Result<Expr, String> {
+fn parse_template(
+    raw: &str,
+    depth: usize,
+    source_line: usize,
+    indent: usize,
+    directive_escape: bool,
+) -> Result<Expr, ParseError> {
     if depth > 64 {
         return Err("string nesting budget exceeded".into());
     }
@@ -20,6 +28,7 @@ fn parse_template(raw: &str, depth: usize, source_line: usize, directive_escape:
     let mut text = String::new();
     let mut index = 0;
     let mut line = source_line;
+    let mut line_start = 0;
     while index < raw.len() {
         let rest = &raw[index..];
         if rest.starts_with('\\') {
@@ -33,8 +42,8 @@ fn parse_template(raw: &str, depth: usize, source_line: usize, directive_escape:
                 '\\' | '"' | '\'' => text.push(escaped),
                 '@' if directive_escape => text.push('@'),
                 '$' if raw[index..].starts_with('{') => text.push('$'),
-                'u' | 'U' => text.push(unicode_escape(raw, &mut index, escaped)?),
-                _ => return Err(format!("unknown escape '\\{escaped}'")),
+                'u' | 'U' => text.push(unicode_escape(raw, &mut index, escaped).map_err(|error| error.at(line))?),
+                _ => return Err(ParseError::from(format!("unknown escape '\\{escaped}'")).at(line)),
             }
         } else if rest.starts_with("${") {
             parts.push(TemplatePart {
@@ -43,13 +52,19 @@ fn parse_template(raw: &str, depth: usize, source_line: usize, directive_escape:
             });
             let start = index + 2;
             let end = interpolation_end(raw, start)?;
-            let mut cursor = Cursor::located(&raw[start..end], line)?;
-            let expression_line = cursor.line();
+            let header_indent = if line_start == 0 {
+                indent
+            } else {
+                crate::lexer::indentation(&raw[line_start..index]).0
+            };
+            let (value, expression_line) = fragments::expression(&raw[start..end], line, header_indent, depth + 1)?;
             parts.push(TemplatePart {
-                value: cursor.expr(0, depth + 1)?,
+                value,
                 line: expression_line,
             });
-            cursor.end()?;
+            if let Some(newline) = raw[start..end].rfind('\n') {
+                line_start = start + newline + 1;
+            }
             line += raw[start..end].bytes().filter(|byte| *byte == b'\n').count();
             index = end + 1;
         } else {
@@ -61,6 +76,7 @@ fn parse_template(raw: &str, depth: usize, source_line: usize, directive_escape:
             });
             if scalar == '\n' {
                 line += 1;
+                line_start = index + scalar.len_utf8();
             }
             index += scalar.len_utf8();
         }
@@ -76,7 +92,7 @@ fn parse_template(raw: &str, depth: usize, source_line: usize, directive_escape:
     }
 }
 
-fn unicode_escape(raw: &str, index: &mut usize, kind: char) -> Result<char, String> {
+fn unicode_escape(raw: &str, index: &mut usize, kind: char) -> Result<char, ParseError> {
     let start;
     let end;
     if kind == 'u' && raw[*index..].starts_with('{') {

@@ -28,7 +28,7 @@ fn changed_packages_reuse_independent_and_recompiled_but_identical_code_scenes()
     let project = setup();
     build(&project);
     let before = manifest(&project);
-    assert_eq!(before["format"], "bifoil.package.v1");
+    assert_eq!(before["format"], "bifoil.package.v2");
     assert!(before["functions"].as_object().unwrap().is_empty());
     let fixed = UNIX_EPOCH + Duration::from_secs(1_000_000);
     for module in ["main", "second"] {
@@ -246,4 +246,54 @@ fn package_receipt_failure_does_not_replace_the_previous_completed_root() {
     fs::remove_dir(receipt).unwrap();
     build(&project);
     assert_ne!(fs::read(project.0.join("startup.txt")).unwrap(), previous);
+}
+
+#[test]
+fn lazy_roots_describe_captures_and_continuations_without_preloading_code() {
+    let project = setup();
+    project.write(
+        "src/main.bfl",
+        r#"import first.first
+scene start():
+    val answer = first()
+    fun read() -> Int = answer
+    for index in 1..2:
+        choice:
+            option "Read ${read()} at ${index}":
+                Unit
+    prose:
+        ${read()}
+"#,
+    );
+    build(&project);
+    let source = fs::read_to_string(project.0.join("startup.txt")).unwrap();
+    assert!(!source.contains("*gosub_scene"));
+    let root = manifest(&project);
+    let header = &root["function_headers"]["main.start"];
+    assert_eq!(header["module"], "main");
+    assert!(header.get("code").is_none());
+    let instructions = header["instructions"].as_u64().unwrap();
+    assert!(
+        header["continuations"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .all(|(pc, _)| pc.parse::<u64>().unwrap() < instructions)
+    );
+    let operations = header["continuations"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|op| op["op"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(operations.contains(&"choose"));
+    assert!(operations.contains(&"stack_mark"));
+    let capture = header["captures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["function"].as_str().unwrap().contains("$read"))
+        .unwrap();
+    assert_eq!(capture["captures"], serde_json::json!(["answer"]));
+    assert_eq!(root["functions"], serde_json::json!({}));
 }

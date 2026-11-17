@@ -6,6 +6,7 @@
 mod branches;
 mod expressions;
 mod loops;
+pub(in crate::compiler) mod options;
 
 use super::result_types::InferredValue;
 use expressions::collect as expression_returns;
@@ -16,7 +17,11 @@ use crate::syntax::{ConditionalBranch, Expr, FunctionAst, Statement, StatementKi
 use std::sync::Arc;
 
 #[derive(Default)]
-struct Inference {
+struct Inference<'a> {
+    alternatives: Option<&'a mut dyn options::ResultOptions>,
+    choices: options::Choices,
+    expected_return: Option<&'a Type>,
+    flow_only: bool,
     types: Vec<InferredValue>,
     loops: Vec<loops::Loop>,
     external_loop_transfers: bool,
@@ -28,6 +33,7 @@ struct Inference {
 pub(super) fn normal_completion(expression: &Expr, env: &mut ScopeStack) -> Result<bool, String> {
     let mut analysis = Inference {
         external_loop_transfers: true,
+        flow_only: true,
         ..Default::default()
     };
     expression_returns(expression, env, &mut analysis)
@@ -36,6 +42,27 @@ pub(super) fn normal_completion(expression: &Expr, env: &mut ScopeStack) -> Resu
 struct ValueResults<'a> {
     expected: Option<&'a Type>,
     types: Vec<InferredValue>,
+    choices: options::Choices,
+}
+
+impl ValueResults<'_> {
+    fn record(&mut self, body: &[Statement], env: &ScopeStack, analysis: &mut Inference<'_>) -> Result<(), String> {
+        if let Some(options) = analysis.alternatives.as_mut() {
+            self.choices.add(options.block_value(body, env)?)
+        } else {
+            self.types
+                .push(super::values::infer_block_result(body, env, self.expected)?);
+            Ok(())
+        }
+    }
+    fn bottom(&mut self, analysis: &Inference<'_>) -> Result<(), String> {
+        if analysis.alternatives.is_some() {
+            self.choices.add(vec![Type::Nothing.into()])
+        } else {
+            self.types.push(Type::Nothing.into());
+            Ok(())
+        }
+    }
 }
 
 /// Value cases share guarded branch environments with ordinary return inference.
@@ -48,6 +75,29 @@ pub(super) fn when_value_result(
     env: &ScopeStack,
     expected: Option<&Type>,
 ) -> Result<InferredValue, String> {
+    let mut analysis = Inference {
+        external_loop_transfers: true,
+        flow_only: true,
+        ..Default::default()
+    };
+    let mut values = ValueResults {
+        expected,
+        types: vec![],
+        choices: options::Choices::default(),
+    };
+    when_values(subject, binding, annotation, cases, env, &mut analysis, &mut values)?;
+    super::result_types::result_join(values.types, expected)
+}
+
+fn when_values(
+    subject: &Option<Expr>,
+    binding: &Option<String>,
+    annotation: &Option<Type>,
+    cases: &[WhenCase],
+    env: &ScopeStack,
+    analysis: &mut Inference<'_>,
+    values: &mut ValueResults<'_>,
+) -> Result<(), String> {
     let subject_type = subject
         .as_ref()
         .map(|value| super::infer_as(value, env, annotation.as_ref()))
@@ -57,24 +107,8 @@ pub(super) fn when_value_result(
         return Err("value-producing when requires exhaustive cases or else".into());
     }
     let mut scope = env.clone();
-    let mut analysis = Inference {
-        external_loop_transfers: true,
-        ..Default::default()
-    };
-    let mut values = ValueResults {
-        expected,
-        types: vec![],
-    };
-    branches::when_statement(
-        subject,
-        binding,
-        annotation,
-        cases,
-        &mut scope,
-        &mut analysis,
-        Some(&mut values),
-    )?;
-    super::result_types::result_join(values.types, expected)
+    branches::when_statement(subject, binding, annotation, cases, &mut scope, analysis, Some(values))?;
+    Ok(())
 }
 
 /// Inspect statements before a value block's final expression using normal flow
@@ -85,6 +119,7 @@ pub(super) fn value_prefix(body: &[Statement], env: &ScopeStack) -> Result<(Scop
     prepare_functions(body, &mut scope)?;
     let mut analysis = Inference {
         external_loop_transfers: true,
+        flow_only: true,
         ..Default::default()
     };
     let reaches = block(&body[..body.len().saturating_sub(1)], &mut scope, &mut analysis)?;
@@ -100,11 +135,13 @@ pub(super) fn if_value_result(
     let mut scope = env.clone();
     let mut analysis = Inference {
         external_loop_transfers: true,
+        flow_only: true,
         ..Default::default()
     };
     let mut values = ValueResults {
         expected,
         types: vec![],
+        choices: options::Choices::default(),
     };
     branches::conditional(branches, no, &mut scope, &mut analysis, Some(&mut values))?;
     // Preserve the previous right-associated joins of an if/elif chain while
@@ -133,6 +170,18 @@ pub(super) fn infer_prepared_returns(
     fun: &FunctionAst,
     environment: super::functions::FunctionEnvironment,
 ) -> Result<Type, String> {
+    let mut env = function_scope(fun, environment)?;
+    let mut analysis = Inference::default();
+    block(&fun.body, &mut env, &mut analysis)?;
+    if analysis.types.is_empty() {
+        return Ok(Type::Unit);
+    }
+    super::result_types::result_join(analysis.types, None)
+        .map(|value| value.ty)
+        .map_err(|_| "function return paths have incompatible types".into())
+}
+
+fn function_scope(fun: &FunctionAst, environment: super::functions::FunctionEnvironment) -> Result<ScopeStack, String> {
     let mut env = environment.into_scopes();
     env.push(Arc::default());
     // Only generated member declarations introduce a receiver. Local functions
@@ -201,14 +250,17 @@ pub(super) fn infer_prepared_returns(
             },
         )?;
     }
-    let mut analysis = Inference::default();
-    block(&fun.body, &mut env, &mut analysis)?;
-    if analysis.types.is_empty() {
-        return Ok(Type::Unit);
-    }
-    super::result_types::result_join(analysis.types, None)
-        .map(|value| value.ty)
-        .map_err(|_| "function return paths have incompatible types".into())
+    Ok(env)
+}
+
+pub(super) fn check_contextual_returns(fun: &FunctionAst, env: &ScopeStack, expected: &Type) -> Result<(), String> {
+    let mut scope = function_scope(fun, super::functions::FunctionEnvironment::new(env))?;
+    let mut analysis = Inference {
+        expected_return: Some(expected),
+        ..Default::default()
+    };
+    block(&fun.body, &mut scope, &mut analysis)?;
+    Ok(())
 }
 
 fn hoist_functions(body: &[Statement], env: &mut ScopeStack) -> Result<(), String> {
@@ -270,7 +322,12 @@ fn block(body: &[Statement], env: &mut ScopeStack, analysis: &mut Inference) -> 
                 ty,
                 mutable,
                 value,
+                shared,
             } => {
+                if *shared {
+                    super::shared::bind_local(name, value, env)?;
+                    continue;
+                }
                 let actual = super::infer_as(value, env, ty.as_ref())?;
                 let ty = ty.clone().unwrap_or_else(|| actual.clone());
                 if !expression_returns(value, env, analysis)? || ty == Type::Nothing {
@@ -336,6 +393,10 @@ fn block(body: &[Statement], env: &mut ScopeStack, analysis: &mut Inference) -> 
                 expressions::returned(value.as_ref(), env, analysis)?;
                 return Ok(false);
             }
+            StatementKind::ImplicitReturn => {
+                expressions::returned(None, env, analysis)?;
+                return Ok(false);
+            }
             StatementKind::If { branches, no } => {
                 if !branches::conditional(branches, no, env, analysis, None)? {
                     return Ok(false);
@@ -398,7 +459,17 @@ fn block(body: &[Statement], env: &mut ScopeStack, analysis: &mut Inference) -> 
                 super::field_proofs::invalidate_write(target, env);
             }
             StatementKind::Expression(value) | StatementKind::Text(value) => {
-                let ty = infer(value, env)?;
+                let ty = match infer(value, env) {
+                    Ok(ty) => ty,
+                    Err(_)
+                        if analysis.flow_only
+                            || analysis.alternatives.is_some()
+                            || analysis.expected_return.is_some() =>
+                    {
+                        Type::Pending
+                    }
+                    Err(error) => return Err(error),
+                };
                 if !expression_returns(value, env, analysis)? || ty == Type::Nothing {
                     return Ok(false);
                 }

@@ -31,7 +31,7 @@ pub(crate) fn widen_arguments(parameters: &[GenericParam], arguments: &mut BTree
     }
 }
 
-fn widening(actual: &Type, bound: &Type) -> Option<Type> {
+pub(super) fn widening(actual: &Type, bound: &Type) -> Option<Type> {
     if actual.subtype_of(bound) {
         return Some(actual.clone());
     }
@@ -66,7 +66,19 @@ fn widening(actual: &Type, bound: &Type) -> Option<Type> {
                 let arguments = source_args
                     .iter()
                     .zip(target_args)
-                    .map(|(source, target)| widening(source, target))
+                    .enumerate()
+                    .map(|(index, (source, target))| {
+                        if target_kind == "Map" && index == 0 {
+                            // Invariant key positions require the requested type,
+                            // even when a key value widens by genuine subtyping.
+                            target
+                                .conversion_from(source)
+                                .filter(|rank| *rank <= 1)
+                                .map(|_| target.clone())
+                        } else {
+                            widening(source, target)
+                        }
+                    })
                     .collect::<Option<Vec<_>>>()?;
                 Type::named(source_kind, arguments)
             }

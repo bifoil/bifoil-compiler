@@ -1,6 +1,6 @@
 //! Indentation, continued statements, logical source lines, and block boundaries.
 
-use super::{Cursor, Parser};
+use super::{Cursor, ParseError, Parser};
 use crate::lexer::{LiteralState, Token, indentation, lex_lines, name, symbol};
 use crate::syntax::{Expr, Statement};
 use std::borrow::Cow;
@@ -38,15 +38,20 @@ impl StatementScan {
 }
 
 impl Parser<'_> {
-    pub(super) fn error(&self, msg: impl Into<String>) -> String {
-        format!("{}:{}: {}", self.file, self.line_index + 1, msg.into())
+    pub(super) fn line(&self) -> usize {
+        self.line_offset + self.line_index + 1
     }
 
-    pub(super) fn statement_cursor(&mut self) -> Result<Cursor, String> {
+    pub(super) fn error(&self, message: impl Into<ParseError>) -> ParseError {
+        let last = self.source_lines.len().saturating_sub(1);
+        message.into().at(self.line_offset + self.line_index.min(last) + 1)
+    }
+
+    pub(super) fn statement_cursor(&mut self) -> Result<Cursor, ParseError> {
         let first = self.line_index;
         let level = indentation(&self.source_lines[first]).0;
         let mut tokens = Vec::new();
-        let mut token_lines = Vec::new();
+        let mut token_positions = Vec::new();
         let mut embedded = Vec::new();
         let mut scan = StatementScan::default();
         let mut row = first;
@@ -63,16 +68,24 @@ impl Parser<'_> {
             };
             let (next, lines) = lex_lines(text).map_err(|e| self.error(e))?;
             tokens.extend(next);
-            token_lines.extend(lines.into_iter().map(|offset| row + 1 + offset));
+            token_positions.extend(lines.into_iter().map(|mut position| {
+                if position.line == 0 {
+                    position.indent = indentation(raw).0;
+                }
+                position.line += self.line_offset + row + 1;
+                position
+            }));
             scan.advance(&tokens);
             let colon = tokens.last().is_some_and(|t| symbol(t, ":"));
             if let Some(index) = scan.header.filter(|_| colon) {
                 self.line_index = row;
-                let header_line = token_lines[index];
-                let header_level = indentation(&self.source_lines[header_line - 1]).0;
+                let header_position = token_positions[index];
+                let header_line = header_position.line;
+                let header_level = header_position.indent;
                 let mut cursor = Cursor::new(tokens[index + 1..].to_vec());
                 cursor.source_line = header_line;
-                cursor.token_lines = token_lines[index + 1..].to_vec();
+                cursor.token_positions = token_positions[index + 1..].to_vec();
+                cursor.expression_depth = self.expression_depth;
                 cursor.embedded = embedded.clone();
                 let kind = if name(&tokens[index], "if") {
                     self.parse_conditional(cursor, header_level, header_line)?.kind
@@ -86,8 +99,8 @@ impl Parser<'_> {
                 }]));
                 tokens.truncate(index);
                 tokens.push(Token::Embedded(id));
-                token_lines.truncate(index);
-                token_lines.push(header_line);
+                token_positions.truncate(index);
+                token_positions.push(header_position);
                 scan = StatementScan::default();
                 row = self.line_index;
             } else if colon && scan.lambda {
@@ -97,15 +110,17 @@ impl Parser<'_> {
                         continue;
                     }
                     let mut cursor = Cursor::new(tokens[index..].to_vec());
-                    cursor.source_line = token_lines[index];
-                    cursor.token_lines = token_lines[index..].to_vec();
+                    cursor.source_line = token_positions[index].line;
+                    cursor.token_positions = token_positions[index..].to_vec();
+                    cursor.expression_depth = self.expression_depth;
                     cursor.embedded = embedded.clone();
                     if let Ok(Expr::Lambda(mut fun)) = cursor.expr(0, 0)
                         && cursor.position == cursor.tokens.len()
                         && !fun.expression
                     {
                         self.line_index = row + 1;
-                        let header_level = indentation(&self.source_lines[token_lines[index] - 1]).0;
+                        let header_level = token_positions[index].indent;
+                        fun.prose_body = self.prose_mode;
                         fun.body = self.parse_block(header_level)?;
                         found = Some((index, Expr::Lambda(fun)));
                         break;
@@ -116,18 +131,19 @@ impl Parser<'_> {
                     embedded.push(expression);
                     tokens.truncate(index);
                     tokens.push(Token::Embedded(id));
-                    let header_line = token_lines[index];
-                    token_lines.truncate(index);
-                    token_lines.push(header_line);
+                    let header_position = token_positions[index];
+                    token_positions.truncate(index);
+                    token_positions.push(header_position);
                     scan = StatementScan::default();
                     row = self.line_index;
                 } else {
                     self.line_index = row;
                     let mut cursor = Cursor::new(tokens);
-                    cursor.token_lines = token_lines;
+                    cursor.token_positions = token_positions;
+                    cursor.expression_depth = self.expression_depth;
                     cursor.embedded = embedded;
                     cursor.indent_level = level;
-                    cursor.source_line = first + 1;
+                    cursor.source_line = self.line_offset + first + 1;
                     return Ok(cursor);
                 }
             } else {
@@ -138,10 +154,11 @@ impl Parser<'_> {
             if scan.balance <= 0 && !unfinished {
                 self.line_index = row.saturating_sub(1);
                 let mut cursor = Cursor::new(tokens);
-                cursor.token_lines = token_lines;
+                cursor.token_positions = token_positions;
+                cursor.expression_depth = self.expression_depth;
                 cursor.embedded = embedded;
                 cursor.indent_level = level;
-                cursor.source_line = first + 1;
+                cursor.source_line = self.line_offset + first + 1;
                 return Ok(cursor);
             }
             if row >= self.source_lines.len() {
@@ -153,14 +170,28 @@ impl Parser<'_> {
     pub(super) fn skip_blank(&mut self) {
         while self.line_index < self.source_lines.len()
             && (self.source_lines[self.line_index].trim().is_empty()
-                || self.source_lines[self.line_index].trim_start().starts_with('#')
-                || self.source_lines[self.line_index].trim_start().starts_with("//"))
+                || comment_row(&self.source_lines[self.line_index], self.prose_mode))
         {
             self.line_index += 1;
         }
     }
 
-    pub(super) fn parse_block(&mut self, parent: usize) -> Result<Vec<Statement>, String> {
+    /// Ignore separators between nested headers, leaving a trailing separator
+    /// for its enclosing prose suite when the construct has ended.
+    pub(super) fn skip_nested_blank(&mut self, parent: usize) {
+        let start = self.line_index;
+        self.skip_blank();
+        if self.prose_mode
+            && self
+                .source_lines
+                .get(self.line_index)
+                .is_none_or(|line| indentation(line).0 <= parent)
+        {
+            self.line_index = start;
+        }
+    }
+
+    pub(super) fn parse_block(&mut self, parent: usize) -> Result<Vec<Statement>, ParseError> {
         if self.prose_mode {
             return self.parse_prose_block(parent);
         }
@@ -190,6 +221,21 @@ impl Parser<'_> {
         }
         Ok(result)
     }
+}
+
+/// Ordinary narrative comment-looking text remains visible. Only an explicit
+/// directive prefix gives a prose row the ordinary code-comment meaning.
+fn comment_row(raw: &str, prose: bool) -> bool {
+    let text = raw.trim_start();
+    let text = if prose {
+        let Some(directive) = text.strip_prefix('@') else {
+            return false;
+        };
+        directive.trim_start()
+    } else {
+        text
+    };
+    text.starts_with('#') || text.starts_with("//")
 }
 
 /// In a type-bearing block header, terminal ?: means a nullable type plus
@@ -240,18 +286,18 @@ fn nullable_body_colon(tokens: &[Token]) -> bool {
     suffix.ty().is_ok() && suffix.need(":").is_ok() && suffix.end().is_ok()
 }
 
-pub(super) fn logical_lines(source: &str) -> Result<Vec<Cow<'_, str>>, String> {
+pub(super) fn logical_lines(source: &str) -> Result<Vec<Cow<'_, str>>, ParseError> {
     scan_lines(source, |_| {})
 }
 
 /// Physical narrative and continued literal rows whose whitespace is content.
-pub(crate) fn protected_lines(source: &str) -> Result<Vec<bool>, String> {
+pub(crate) fn protected_lines(source: &str) -> Result<Vec<bool>, ParseError> {
     let mut protected = vec![false; source.lines().count()];
     scan_lines(source, |row| protected[row] = true)?;
     Ok(protected)
 }
 
-fn scan_lines(source: &str, mut protect: impl FnMut(usize)) -> Result<Vec<Cow<'_, str>>, String> {
+fn scan_lines(source: &str, mut protect: impl FnMut(usize)) -> Result<Vec<Cow<'_, str>>, ParseError> {
     // Only text literals are combined here. Code continuations are gathered by the parser so block layout survives.
     let mut lines = source.lines().map(Cow::Borrowed).collect::<Vec<_>>();
     let mut prose = None;
@@ -272,7 +318,7 @@ fn scan_lines(source: &str, mut protect: impl FnMut(usize)) -> Result<Vec<Cow<'_
             protect(row);
             prose_literals
                 .scan_template_line(&lines[row])
-                .map_err(|error| format!("{}: {error}", row + 1))?;
+                .map_err(|error| ParseError::from(error).at(row + 1))?;
             row += 1;
             continue;
         }
@@ -287,13 +333,13 @@ fn scan_lines(source: &str, mut protect: impl FnMut(usize)) -> Result<Vec<Cow<'_
         loop {
             literals
                 .scan_line(&lines[row])
-                .map_err(|error| format!("{}: {error}", row + 1))?;
+                .map_err(|error| ParseError::from(error).at(row + 1))?;
             if !literals.continues() {
                 break;
             }
             row += 1;
             if row >= lines.len() {
-                return Err(format!("{}: unterminated text literal or interpolation", start + 1));
+                return Err(ParseError::from("unterminated text literal or interpolation").at(start + 1));
             }
             combined.to_mut().push('\n');
             combined.to_mut().push_str(&lines[row]);

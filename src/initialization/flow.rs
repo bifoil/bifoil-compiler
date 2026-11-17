@@ -258,7 +258,7 @@ pub(super) fn analyze(
                     state.discard(2)?;
                     state.stack.push(Origin::Unknown);
                 }
-                Op::Binary { .. } | Op::Range { .. } | Op::RangeStep | Op::AddressIndex => {
+                Op::Binary { .. } | Op::ExactCompare { .. } | Op::Range { .. } | Op::RangeStep | Op::AddressIndex => {
                     state.discard(2)?;
                     state.stack.push(Origin::empty());
                 }
