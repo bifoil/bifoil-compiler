@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  id-token: write
 jobs:
   quality:
     runs-on: ubuntu-24.04
@@ -180,6 +181,15 @@ jobs:
           if missing:
               raise SystemExit(1)
           PY
+      - name: Authenticate this project through GitHub OIDC
+        if: >-
+          always() && steps.coverage.outcome == 'success' && github.actor != 'dependabot[bot]' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        id: sonar-auth
+        uses: SonarSource/sonarqube-auth-action@a0aa643acde4162396015b4f12536c1b9c4aab82 # v1
+        with:
+          export-env: false
+          project-key: bifoil_bifoil-compiler
       - name: Submit measured coverage and wait for the strict Sonar gate
         if: >-
           always() && steps.coverage.outcome == 'success' && github.actor != 'dependabot[bot]' &&
@@ -188,4 +198,4 @@ jobs:
         with:
           args: -Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=300
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ steps.sonar-auth.outputs.sonar-token }}
