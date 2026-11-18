@@ -143,3 +143,6 @@ fn extend(prefixes: Vec<Slots>, options: &[Type], key: bool) -> Result<Vec<Slots
     }
     Ok(extended)
 }
+
+#[cfg(test)]
+mod tests;
