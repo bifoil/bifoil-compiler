@@ -75,82 +75,13 @@ pub(super) fn collect(expression: &Expr, env: &mut ScopeStack, analysis: &mut In
             env.pop();
             Ok(reaches)
         }
-        Expr::Binary(operator, left, right, ..) => {
-            let left_type = (operator == "?:").then(|| infer(left, env).ok()).flatten();
-            if !collect(left, env, analysis)? {
-                return Ok(false);
-            }
-            let known = super::super::constants::constant_boolean(left);
-            let execute = match operator.as_str() {
-                "&&" => known,
-                "||" => known.map(|value| !value),
-                "?:" => match left_type {
-                    Some(Type::Null) => Some(true),
-                    Some(ty) if !ty.permits_null() => Some(false),
-                    _ => None,
-                },
-                _ => return collect(right, env, analysis),
-            };
-            lazy(execute, env, analysis, |env, analysis| {
-                if operator == "&&" || operator == "||" {
-                    narrow_condition(left, env, operator == "&&");
-                }
-                collect(right, env, analysis)
-            })
-        }
+        Expr::Binary(operator, left, right, ..) => binary_returns(operator, left, right, env, analysis),
         Expr::Call(callee, args, ..) | Expr::SafeCall(callee, args, ..) => {
-            let resolved = super::super::specialize_signature(callee, Some(args), None, env)
-                .ok()
-                .flatten();
-            let builtin = resolved
-                .as_ref()
-                .is_some_and(|call| call.signature.id.starts_with("$builtin."));
-            let heap_effect = resolved
-                .as_ref()
-                .map(|call| super::super::members::builtin_heap_effect(&call.signature.id))
-                .unwrap_or(super::super::members::BuiltinHeapEffect::Unknown);
-            let ty = resolved
-                .map(|call| call.signature.ty())
-                .or_else(|| infer(callee, env).ok());
-            if !collect(callee, env, analysis)? {
-                return Ok(false);
-            }
-            let safe = matches!(expression, Expr::SafeCall(..))
-                || matches!(
-                    super::super::overloads::callable_base(callee),
-                    Expr::Member { safe: true, .. }
-                );
-            let execute = if safe { present(ty.as_ref()) } else { Some(true) };
-            lazy(execute, env, analysis, |env, analysis| {
-                for (_, argument) in args {
-                    if !collect(argument, env, analysis)? {
-                        return Ok(false);
-                    }
-                }
-                if !builtin {
-                    invalidate_narrowing(env);
-                } else {
-                    super::super::field_proofs::invalidate_builtin(heap_effect, env);
-                }
-                Ok(!ty.as_ref().is_some_and(|ty| matches!(
-                    crate::generics::member_view(ty.present()), Type::Function { result, .. } if *result == Type::Nothing
-                )))
-            })
+            call_returns(expression, callee, args, env, analysis)
         }
         Expr::Index {
             receiver, index, safe, ..
-        } => {
-            let ty = if *safe { infer(receiver, env).ok() } else { None };
-            if !collect(receiver, env, analysis)? {
-                return Ok(false);
-            }
-            lazy(
-                if *safe { present(ty.as_ref()) } else { Some(true) },
-                env,
-                analysis,
-                |env, analysis| collect(index, env, analysis),
-            )
-        }
+        } => index_returns(receiver, index, *safe, env, analysis),
         Expr::Unwrap(value, ..) => {
             if !collect(value, env, analysis)? {
                 return Ok(false);
@@ -165,35 +96,9 @@ pub(super) fn collect(expression: &Expr, env: &mut ScopeStack, analysis: &mut In
         | Expr::Member { receiver: value, .. }
         | Expr::TypeOp { value, .. }
         | Expr::TypeApply { callee: value, .. } => collect(value, env, analysis),
-        Expr::Collection { entries, .. } => {
-            for (key, value) in entries {
-                if let Some(key) = key
-                    && !collect(key, env, analysis)?
-                {
-                    return Ok(false);
-                }
-                if !collect(value, env, analysis)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        Expr::Construct { fields, .. } => {
-            for (_, value) in fields {
-                if !collect(value, env, analysis)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
-        Expr::Format(parts) => {
-            for part in parts {
-                if !collect(&part.value, env, analysis)? {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        }
+        Expr::Collection { entries, .. } => collection_returns(entries, env, analysis),
+        Expr::Construct { fields, .. } => ordered_returns(fields.iter().map(|(_, value)| value), env, analysis),
+        Expr::Format(parts) => ordered_returns(parts.iter().map(|part| &part.value), env, analysis),
         Expr::Lambda(_)
         | Expr::Int(_)
         | Expr::Float(_)
@@ -204,6 +109,134 @@ pub(super) fn collect(expression: &Expr, env: &mut ScopeStack, analysis: &mut In
         | Expr::Name(_)
         | Expr::Reference(_) => Ok(true),
     }
+}
+
+fn binary_returns(
+    operator: &str,
+    left: &Expr,
+    right: &Expr,
+    env: &mut ScopeStack,
+    analysis: &mut Inference,
+) -> Result<bool, String> {
+    let left_type = (operator == "?:").then(|| infer(left, env).ok()).flatten();
+    if !collect(left, env, analysis)? {
+        return Ok(false);
+    }
+    let known = super::super::constants::constant_boolean(left);
+    let execute = match operator {
+        "&&" => known,
+        "||" => known.map(|value| !value),
+        "?:" => match left_type {
+            Some(Type::Null) => Some(true),
+            Some(ty) if !ty.permits_null() => Some(false),
+            _ => None,
+        },
+        _ => return collect(right, env, analysis),
+    };
+    lazy(execute, env, analysis, |env, analysis| {
+        if operator == "&&" || operator == "||" {
+            narrow_condition(left, env, operator == "&&");
+        }
+        collect(right, env, analysis)
+    })
+}
+
+fn call_returns(
+    expression: &Expr,
+    callee: &Expr,
+    args: &[(Option<String>, Expr)],
+    env: &mut ScopeStack,
+    analysis: &mut Inference,
+) -> Result<bool, String> {
+    let resolved = super::super::specialize_signature(callee, Some(args), None, env)
+        .ok()
+        .flatten();
+    let builtin = resolved
+        .as_ref()
+        .is_some_and(|call| call.signature.id.starts_with("$builtin."));
+    let heap_effect = resolved
+        .as_ref()
+        .map(|call| super::super::members::builtin_heap_effect(&call.signature.id))
+        .unwrap_or(super::super::members::BuiltinHeapEffect::Unknown);
+    let ty = resolved
+        .map(|call| call.signature.ty())
+        .or_else(|| infer(callee, env).ok());
+    if !collect(callee, env, analysis)? {
+        return Ok(false);
+    }
+    let safe = matches!(expression, Expr::SafeCall(..))
+        || matches!(
+            super::super::overloads::callable_base(callee),
+            Expr::Member { safe: true, .. }
+        );
+    let execute = if safe { present(ty.as_ref()) } else { Some(true) };
+    lazy(execute, env, analysis, |env, analysis| {
+        for (_, argument) in args {
+            if !collect(argument, env, analysis)? {
+                return Ok(false);
+            }
+        }
+        if !builtin {
+            invalidate_narrowing(env);
+        } else {
+            super::super::field_proofs::invalidate_builtin(heap_effect, env);
+        }
+        Ok(!ty.as_ref().is_some_and(|ty| {
+            matches!(
+                crate::generics::member_view(ty.present()), Type::Function { result, .. } if *result == Type::Nothing
+            )
+        }))
+    })
+}
+
+fn index_returns(
+    receiver: &Expr,
+    index: &Expr,
+    safe: bool,
+    env: &mut ScopeStack,
+    analysis: &mut Inference,
+) -> Result<bool, String> {
+    let ty = if safe { infer(receiver, env).ok() } else { None };
+    if !collect(receiver, env, analysis)? {
+        return Ok(false);
+    }
+    lazy(
+        if safe { present(ty.as_ref()) } else { Some(true) },
+        env,
+        analysis,
+        |env, analysis| collect(index, env, analysis),
+    )
+}
+
+fn collection_returns(
+    entries: &[(Option<Expr>, Expr)],
+    env: &mut ScopeStack,
+    analysis: &mut Inference,
+) -> Result<bool, String> {
+    for (key, value) in entries {
+        if let Some(key) = key
+            && !collect(key, env, analysis)?
+        {
+            return Ok(false);
+        }
+        if !collect(value, env, analysis)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn ordered_returns<'a>(
+    values: impl IntoIterator<Item = &'a Expr>,
+    env: &mut ScopeStack,
+    analysis: &mut Inference,
+) -> Result<bool, String> {
+    for value in values {
+        if !collect(value, env, analysis)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn present(ty: Option<&Type>) -> Option<bool> {
