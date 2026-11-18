@@ -121,9 +121,12 @@ impl Compiler {
                             super::captures::runtime_capture_names(&captured_names(f), &context.scopes)
                         };
                         let site = closure_sites[&sig.id];
-                        if let Op::Closure { captures, .. } = &mut context.instructions[site].op {
-                            *captures = Some(names);
-                        }
+                        // Complete the placeholder emitted for this declaration above.
+                        context.instructions[site].op = Op::Closure {
+                            name: sig.id.clone(),
+                            function: sig.id.clone(),
+                            captures: Some(names),
+                        };
                         let environment = super::captures::named_environment(&context.scopes, &entry);
                         self.check_local_definition(f, sig, environment, context)?;
                     }
