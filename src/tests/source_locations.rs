@@ -6,6 +6,23 @@ use std::sync::Arc;
 use std::time::Instant;
 
 #[test]
+fn source_diagnostics_preserve_precise_locations_without_confusing_filename_prefixes() {
+    for file in ["src/story.bfl", "C:\\original\\story.bfl", "src/😀.bfl"] {
+        let precise = format!("{file}:4: original failure");
+        assert_eq!(crate::diagnostics::at_source(file, Some(19), precise.clone()), precise);
+        let adjacent = format!("{file}-copy:4: other source failure");
+        assert_eq!(
+            crate::diagnostics::at_source(file, Some(19), adjacent.clone()),
+            format!("{file}:19: {adjacent}")
+        );
+        assert_eq!(
+            crate::diagnostics::at_source(file, None, file.into()),
+            format!("{file}: {file}")
+        );
+    }
+}
+
+#[test]
 fn generated_and_nested_bodies_share_the_path_and_preserve_wire_locations() {
     let file = "src/λ-\"quoted\"\\location.bfl";
     let mut module = crate::compiler::compile(

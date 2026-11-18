@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn body_inspection_rejects_resident_code_before_callbacks_and_retains_the_stored_body() {
+    let mut input = module("resident_inspection");
+    let name = "resident_inspection.answer";
+    let resident = input.functions[name].code.clone();
+    let mut store = CodeStore::default();
+    store.record_pending(&mut input, Instant::now()).unwrap();
+    input.functions.get_mut(name).unwrap().code = resident.clone();
+    let error = store
+        .inspect_functions(
+            &input.functions,
+            Instant::now(),
+            |_| panic!("resident instructions must be rejected before selecting a stored body"),
+            |_, _| panic!("resident instructions must be rejected before analysis"),
+        )
+        .unwrap_err();
+    assert_eq!(error, format!("pending function already has instructions: {name}"));
+    assert_eq!(
+        serde_json::to_value(&input.functions[name].code).unwrap(),
+        serde_json::to_value(&resident).unwrap()
+    );
+    input.functions.get_mut(name).unwrap().code.clear();
+    let mut inspected = false;
+    store
+        .inspect_functions(
+            &input.functions,
+            Instant::now(),
+            |_| true,
+            |id, function| {
+                assert_eq!(id, name);
+                assert_eq!(
+                    serde_json::to_value(&function.code).unwrap(),
+                    serde_json::to_value(&resident).unwrap()
+                );
+                inspected = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert!(inspected);
+}
+
+#[test]
 fn canonical_module_views_preserve_bytes_and_return_headers_after_inspection_errors() {
     let mut input = module("views");
     let expected = serde_json::to_vec(&input).unwrap();

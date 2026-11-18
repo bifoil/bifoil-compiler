@@ -201,6 +201,40 @@ fn identity_checks_after_module_fields_drop_the_private_body_without_publishing_
 }
 
 #[test]
+fn duplicate_cache_fields_are_rejected_after_an_intact_first_value() {
+    use serde::de::DeserializeSeed;
+    let (_temporary, cache, module) = fixture();
+    let intact = record(&cache, &module);
+    assert!(
+        input::RecordSeed::new(
+            crate::module_input::streamed::Seed::new(Instant::now()),
+            &cache.compiler,
+            "source"
+        )
+        .deserialize(&mut serde_json::Deserializer::from_str(&intact))
+        .is_ok()
+    );
+    for (field, value) in [
+        ("compiler", serde_json::json!(&cache.compiler)),
+        ("source", serde_json::json!("source")),
+        ("module", serde_json::to_value(&module).unwrap()),
+        ("extension", serde_json::json!({"future": true})),
+    ] {
+        let text = format!("{{{field:?}:{value},{field:?}:{value},{}", &intact[1..]);
+        let seed = crate::module_input::streamed::Seed::new(Instant::now());
+        let error = input::RecordSeed::new(seed.clone(), &cache.compiler, "source")
+            .deserialize(&mut serde_json::Deserializer::from_str(&text))
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains(&format!("duplicate cache field '{field}'")),
+            "{error}"
+        );
+        assert!(seed.take_failure().is_none());
+    }
+}
+
+#[test]
 fn warm_markers_use_constant_bounded_reads() {
     let expected = "a".repeat(64);
     assert!(marker_matches(expected.as_bytes(), expected.as_bytes()));
