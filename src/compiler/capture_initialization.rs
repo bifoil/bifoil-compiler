@@ -482,3 +482,6 @@ pub(super) fn apply(targets: &[Target], context: &mut FunctionContext) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
