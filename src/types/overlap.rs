@@ -198,3 +198,6 @@ fn identical_argument(query: &mut OverlapQuery, left: &Type, right: &Type, depth
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests;
