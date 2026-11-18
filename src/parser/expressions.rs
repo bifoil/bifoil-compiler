@@ -111,9 +111,47 @@ impl Cursor {
         if depth > 64 {
             return Err("expression nesting budget exceeded".into());
         }
+        let mut left = self.prefix(depth)?;
+        loop {
+            // Reject depth while the tree is still small enough to drop safely.
+            // Waiting until the end could build an arbitrarily deep postfix or
+            // left-associated tree even though recursive parsing itself is bounded.
+            expression_depth(&left)?;
+            let operation_line = self.line();
+            if let Some(args) = self.explicit_type_arguments(&left) {
+                left = Expr::TypeApply {
+                    callee: Box::new(left),
+                    args,
+                };
+                continue;
+            }
+            let (next, applied) = self.postfix(left, depth, operation_line)?;
+            left = next;
+            if applied {
+                continue;
+            }
+            let Some((op, precedence)) = self.binary_operator(min) else {
+                break;
+            };
+            if ["is", "!is", "as", "as?"].contains(&op.as_str()) {
+                left = Expr::TypeOp {
+                    value: Box::new(left),
+                    operator: op,
+                    ty: self.ty()?,
+                    line: operation_line,
+                };
+                continue;
+            }
+            left = self.binary_expression(left, op, precedence, depth, operation_line)?;
+        }
+        expression_depth(&left)?;
+        Ok(left)
+    }
+
+    fn prefix(&mut self, depth: usize) -> Result<Expr, ParseError> {
         let prefix_line = self.line();
         let lambda_start = self.starts_lambda();
-        let mut left = if lambda_start {
+        let left = if lambda_start {
             let suspend = self.kw("suspend");
             self.lambda(suspend, depth)?
         } else if self.sym("-") {
@@ -156,237 +194,262 @@ impl Cursor {
             self.need(")")?;
             Expr::Group(Box::new(e))
         } else if self.sym("[") || self.sym("{") || self.kw("mutable") {
-            let mut mutable = false;
-            let mut list = self
-                .tokens
-                .get(self.position - 1)
-                .is_some_and(|token| symbol(token, "["));
-            if self
-                .tokens
-                .get(self.position - 1)
-                .is_some_and(|token| name(token, "mutable"))
-            {
-                mutable = true;
-                list = self.sym("[");
-                if !list {
-                    self.need("{")?
-                }
-            }
-            let end = if list { "]" } else { "}" };
-            let mut family = if list { Some("List".to_string()) } else { None };
-            let mut entries = vec![];
-            if !self.sym(end) {
-                loop {
-                    let first = self.expr(0, depth + 1)?;
-                    let entry = if !list && self.sym(":") {
-                        if family.as_deref() == Some("Set") {
-                            return Err("cannot mix map and set entries".into());
-                        }
-                        family = Some("Map".into());
-                        (Some(first), self.expr(0, depth + 1)?)
-                    } else {
-                        if family.as_deref() == Some("Map") {
-                            return Err("map entry requires a value".into());
-                        }
-                        if !list {
-                            family = Some("Set".into())
-                        }
-                        (None, first)
-                    };
-                    entries.push(entry);
-                    if self.sym(end) {
-                        break;
-                    }
-                    self.need(",")?;
-                    if self.sym(end) {
-                        break;
-                    }
-                }
-            }
-            Expr::Collection {
-                family,
-                mutable,
-                entries,
-            }
+            self.collection(depth)?
         } else {
-            match self.tokens.get(self.position).cloned() {
-                Some(Token::Embedded(id)) => {
-                    self.position += 1;
-                    self.embedded.get(id).cloned().ok_or("invalid embedded expression")?
-                }
-                Some(Token::Number(raw)) => {
-                    self.position += 1;
-                    if raw.starts_with("0x") || raw.starts_with("0X") {
-                        Expr::Int(i64::from_str_radix(&raw[2..], 16).map_err(|_| "invalid hexadecimal Int")?)
-                    } else if raw.starts_with("0b") || raw.starts_with("0B") {
-                        Expr::Int(i64::from_str_radix(&raw[2..], 2).map_err(|_| "invalid binary Int")?)
-                    } else if raw.contains(['.', 'e', 'E']) {
-                        let n = raw.parse::<f64>().map_err(|_| "invalid Float")?;
-                        if !n.is_finite() {
-                            return Err("non-finite Float literal".into());
-                        }
-                        Expr::Float(n)
-                    } else {
-                        Expr::Int(raw.parse().map_err(|_| "Int literal too large")?)
-                    }
-                }
-                Some(Token::Text(raw)) => {
-                    let line = self.line();
-                    let indent = self.indent();
-                    self.position += 1;
-                    template(&raw, depth + 1, line, indent)?
-                }
-                Some(Token::Character(raw)) => {
-                    let line = self.line();
-                    let indent = self.indent();
-                    self.position += 1;
-                    let Expr::String(text) = template(&raw, depth + 1, line, indent)? else {
-                        return Err("Char cannot interpolate".into());
-                    };
-                    if text.chars().count() != 1 {
-                        return Err("Char must contain exactly one Unicode scalar".into());
-                    }
-                    Expr::Char(text)
-                }
-                Some(Token::Name(n)) => {
-                    self.position += 1;
-                    match n.as_str() {
-                        "true" => Expr::Boolean(true),
-                        "false" => Expr::Boolean(false),
-                        "null" => Expr::Null,
-                        _ => Expr::Name(n),
-                    }
-                }
-                _ => return Err("expected an expression".into()),
-            }
+            self.literal(depth)?
         };
-        loop {
-            // Reject depth while the tree is still small enough to drop safely.
-            // Waiting until the end could build an arbitrarily deep postfix or
-            // left-associated tree even though recursive parsing itself is bounded.
-            expression_depth(&left)?;
-            let operation_line = self.line();
-            if self.tokens.get(self.position).is_some_and(|t| symbol(t, "<")) {
-                let mut probe = self.clone();
-                probe.position += 1;
-                let mut args = vec![];
-                let mut valid = true;
-                loop {
-                    match probe.ty() {
-                        Ok(t) => args.push(t),
-                        Err(_) => {
-                            valid = false;
-                            break;
-                        }
-                    }
-                    if probe.sym(">") {
-                        break;
-                    }
-                    if !probe.sym(",") {
+        Ok(left)
+    }
+
+    fn collection(&mut self, depth: usize) -> Result<Expr, ParseError> {
+        let mut mutable = false;
+        let mut list = self
+            .tokens
+            .get(self.position - 1)
+            .is_some_and(|token| symbol(token, "["));
+        if self
+            .tokens
+            .get(self.position - 1)
+            .is_some_and(|token| name(token, "mutable"))
+        {
+            mutable = true;
+            list = self.sym("[");
+            if !list {
+                self.need("{")?
+            }
+        }
+        let end = if list { "]" } else { "}" };
+        let mut family = if list { Some("List".to_string()) } else { None };
+        let mut entries = vec![];
+        if !self.sym(end) {
+            loop {
+                let entry = self.collection_entry(list, &mut family, depth)?;
+                entries.push(entry);
+                if self.sym(end) {
+                    break;
+                }
+                self.need(",")?;
+                if self.sym(end) {
+                    break;
+                }
+            }
+        }
+        Ok(Expr::Collection {
+            family,
+            mutable,
+            entries,
+        })
+    }
+
+    fn collection_entry(
+        &mut self,
+        list: bool,
+        family: &mut Option<String>,
+        depth: usize,
+    ) -> Result<(Option<Expr>, Expr), ParseError> {
+        let first = self.expr(0, depth + 1)?;
+        if !list && self.sym(":") {
+            if family.as_deref() == Some("Set") {
+                return Err("cannot mix map and set entries".into());
+            }
+            *family = Some("Map".into());
+            Ok((Some(first), self.expr(0, depth + 1)?))
+        } else {
+            if family.as_deref() == Some("Map") {
+                return Err("map entry requires a value".into());
+            }
+            if !list {
+                *family = Some("Set".into());
+            }
+            Ok((None, first))
+        }
+    }
+
+    fn literal(&mut self, depth: usize) -> Result<Expr, ParseError> {
+        Ok(match self.tokens.get(self.position).cloned() {
+            Some(Token::Embedded(id)) => {
+                self.position += 1;
+                self.embedded.get(id).cloned().ok_or("invalid embedded expression")?
+            }
+            Some(Token::Number(raw)) => {
+                self.position += 1;
+                number_literal(&raw)?
+            }
+            Some(Token::Text(raw)) => {
+                let line = self.line();
+                let indent = self.indent();
+                self.position += 1;
+                template(&raw, depth + 1, line, indent)?
+            }
+            Some(Token::Character(raw)) => {
+                let line = self.line();
+                let indent = self.indent();
+                self.position += 1;
+                let Expr::String(text) = template(&raw, depth + 1, line, indent)? else {
+                    return Err("Char cannot interpolate".into());
+                };
+                if text.chars().count() != 1 {
+                    return Err("Char must contain exactly one Unicode scalar".into());
+                }
+                Expr::Char(text)
+            }
+            Some(Token::Name(n)) => {
+                self.position += 1;
+                match n.as_str() {
+                    "true" => Expr::Boolean(true),
+                    "false" => Expr::Boolean(false),
+                    "null" => Expr::Null,
+                    _ => Expr::Name(n),
+                }
+            }
+            _ => return Err("expected an expression".into()),
+        })
+    }
+
+    fn explicit_type_arguments(&mut self, left: &Expr) -> Option<Vec<crate::model::Type>> {
+        if !self.tokens.get(self.position).is_some_and(|t| symbol(t, "<")) {
+            return None;
+        }
+        {
+            let mut probe = self.clone();
+            probe.position += 1;
+            let mut args = vec![];
+            let mut valid = true;
+            loop {
+                match probe.ty() {
+                    Ok(t) => args.push(t),
+                    Err(_) => {
                         valid = false;
                         break;
                     }
                 }
-                let explicit_reference = matches!(left, Expr::Reference(_) | Expr::BoundReference(..));
-                if valid && (explicit_reference || probe.tokens.get(probe.position).is_some_and(|t| symbol(t, "("))) {
-                    self.position = probe.position;
-                    left = Expr::TypeApply {
-                        callee: Box::new(left),
-                        args,
-                    };
-                    continue;
+                if probe.sym(">") {
+                    break;
+                }
+                if !probe.sym(",") {
+                    valid = false;
+                    break;
                 }
             }
-            if self.sym("(") {
-                let safe = matches!(&left, Expr::Member { safe: true, .. });
-                let args = self.arguments(depth)?;
-                left = if safe {
-                    Expr::SafeCall(Box::new(left), args, operation_line)
-                } else {
-                    Expr::Call(Box::new(left), args, operation_line)
-                };
-                continue;
+            let explicit_reference = matches!(left, Expr::Reference(_) | Expr::BoundReference(..));
+            if valid && (explicit_reference || probe.tokens.get(probe.position).is_some_and(|t| symbol(t, "("))) {
+                self.position = probe.position;
+                return Some(args);
             }
-            if self.sym("?.") {
-                if self.sym("(") {
-                    left = Expr::SafeCall(Box::new(left), self.arguments(depth)?, operation_line);
-                } else {
-                    left = Expr::Member {
-                        receiver: Box::new(left),
-                        name: self.member_name()?,
-                        safe: true,
-                        line: operation_line,
-                    };
+        }
+        None
+    }
+
+    fn postfix(&mut self, left: Expr, depth: usize, line: usize) -> Result<(Expr, bool), ParseError> {
+        if self.sym("(") {
+            let safe = matches!(&left, Expr::Member { safe: true, .. });
+            let args = self.arguments(depth)?;
+            let parsed = if safe {
+                Expr::SafeCall(Box::new(left), args, line)
+            } else {
+                Expr::Call(Box::new(left), args, line)
+            };
+            return Ok((parsed, true));
+        }
+        if self.sym("?.") {
+            let parsed = if self.sym("(") {
+                Expr::SafeCall(Box::new(left), self.arguments(depth)?, line)
+            } else {
+                Expr::Member {
+                    receiver: Box::new(left),
+                    name: self.member_name()?,
+                    safe: true,
+                    line,
                 }
-                continue;
-            }
-            if self.sym(".") {
-                left = Expr::Member {
+            };
+            return Ok((parsed, true));
+        }
+        if self.sym(".") {
+            return Ok((
+                Expr::Member {
                     receiver: Box::new(left),
                     name: self.member_name()?,
                     safe: false,
-                    line: operation_line,
-                };
-                continue;
-            }
-            if self.sym("::") {
-                left = Expr::BoundReference(Box::new(left), self.member_name()?, operation_line);
-                continue;
-            }
-            if self.sym("[") || self.sym("?[") {
-                let safe = self
-                    .tokens
-                    .get(self.position - 1)
-                    .is_some_and(|token| symbol(token, "?["));
-                let index = self.expr(0, depth + 1)?;
-                self.need("]")?;
-                left = Expr::Index {
+                    line,
+                },
+                true,
+            ));
+        }
+        if self.sym("::") {
+            return Ok((Expr::BoundReference(Box::new(left), self.member_name()?, line), true));
+        }
+        if self.sym("[") || self.sym("?[") {
+            let safe = self
+                .tokens
+                .get(self.position - 1)
+                .is_some_and(|token| symbol(token, "?["));
+            let index = self.expr(0, depth + 1)?;
+            self.need("]")?;
+            return Ok((
+                Expr::Index {
                     receiver: Box::new(left),
                     index: Box::new(index),
                     safe,
-                    line: operation_line,
-                };
-                continue;
-            }
-            if self.sym("!!") {
-                left = Expr::Unwrap(Box::new(left), operation_line);
-                continue;
-            }
-            let op = match self.tokens.get(self.position) {
-                Some(Token::Symbol(s)) => s.as_str(),
-                Some(Token::Name(s)) if ["in", "downTo", "step", "is", "as", "as?"].contains(&s.as_str()) => s.as_str(),
-                _ => break,
-            }
-            .to_string();
-            let Some(precedence) = super::operators::precedence(&op) else {
-                break;
-            };
-            if precedence < min {
-                break;
-            }
-            self.position += 1;
-            if ["is", "!is", "as", "as?"].contains(&op.as_str()) {
-                left = Expr::TypeOp {
-                    value: Box::new(left),
-                    operator: op,
-                    ty: self.ty()?,
-                    line: operation_line,
-                };
-                continue;
-            }
-            let right = self.expr(if op == "?:" { precedence } else { precedence + 1 }, depth + 1)?;
-            let fair = |e: &Expr| matches!(e,Expr::Binary(o,_,_,_) if o=="%+"||o=="%-");
-            if ((op == "%+" || op == "%-") && (matches!(left, Expr::Binary(..)) || matches!(right, Expr::Binary(..))))
-                || fair(&left)
-                || fair(&right)
-            {
-                return Err("fairmath combinations require explicit parentheses".into());
-            }
-            left = Expr::Binary(op, Box::new(left), Box::new(right), operation_line);
+                    line,
+                },
+                true,
+            ));
         }
-        expression_depth(&left)?;
-        Ok(left)
+        if self.sym("!!") {
+            return Ok((Expr::Unwrap(Box::new(left), line), true));
+        }
+        Ok((left, false))
     }
+
+    fn binary_operator(&mut self, min: u8) -> Option<(String, u8)> {
+        let op = match self.tokens.get(self.position) {
+            Some(Token::Symbol(s)) => s.as_str(),
+            Some(Token::Name(s)) if ["in", "downTo", "step", "is", "as", "as?"].contains(&s.as_str()) => s.as_str(),
+            _ => return None,
+        }
+        .to_string();
+        let precedence = super::operators::precedence(&op)?;
+        if precedence < min {
+            return None;
+        }
+        self.position += 1;
+        Some((op, precedence))
+    }
+
+    fn binary_expression(
+        &mut self,
+        left: Expr,
+        op: String,
+        precedence: u8,
+        depth: usize,
+        operation_line: usize,
+    ) -> Result<Expr, ParseError> {
+        let right = self.expr(if op == "?:" { precedence } else { precedence + 1 }, depth + 1)?;
+        let fair = |e: &Expr| matches!(e,Expr::Binary(o,_,_,_) if o=="%+"||o=="%-");
+        if ((op == "%+" || op == "%-") && (matches!(left, Expr::Binary(..)) || matches!(right, Expr::Binary(..))))
+            || fair(&left)
+            || fair(&right)
+        {
+            return Err("fairmath combinations require explicit parentheses".into());
+        }
+        Ok(Expr::Binary(op, Box::new(left), Box::new(right), operation_line))
+    }
+}
+
+fn number_literal(raw: &str) -> Result<Expr, ParseError> {
+    Ok(if raw.starts_with("0x") || raw.starts_with("0X") {
+        Expr::Int(i64::from_str_radix(&raw[2..], 16).map_err(|_| "invalid hexadecimal Int")?)
+    } else if raw.starts_with("0b") || raw.starts_with("0B") {
+        Expr::Int(i64::from_str_radix(&raw[2..], 2).map_err(|_| "invalid binary Int")?)
+    } else if raw.contains(['.', 'e', 'E']) {
+        let n = raw.parse::<f64>().map_err(|_| "invalid Float")?;
+        if !n.is_finite() {
+            return Err("non-finite Float literal".into());
+        }
+        Expr::Float(n)
+    } else {
+        Expr::Int(raw.parse().map_err(|_| "Int literal too large")?)
+    })
 }
 
 pub(super) fn expression_depth(expr: &Expr) -> Result<(), ParseError> {
