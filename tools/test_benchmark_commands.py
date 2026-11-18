@@ -1,9 +1,11 @@
 """Exercise benchmark report and artifact contracts with actual compiler processes."""
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
-from test_support import NativeCompilerTest
+from test_support import NativeCompilerTest, load_tool
 
 
 class BenchmarkCommands(NativeCompilerTest):
@@ -227,6 +229,35 @@ class BenchmarkCommands(NativeCompilerTest):
                 self.assertIn("3 compiled, 0 reused", report["runs"]["member_edit"]["stdout"])
                 self.assertNotEqual(report["runs"]["unchanged"]["output_sha256"],
                                     report["runs"]["member_edit"]["output_sha256"])
+
+    def test_explicit_runtime_executes_inline_and_packaged_restored_observations(self):
+        runtime, node = os.environ.get("BIFOIL_TEST_RUNTIME"), os.environ.get("BIFOIL_TEST_NODE")
+        if not runtime or not node:
+            self.skipTest("supply explicit runtime and Node dependencies for restored execution")
+        project = self.root / "runtime-packages"
+        self.run_tool(
+            "benchmark-packages.py",
+            [self.compiler, project, "--modules", 1, "--functions", 3, "--runtime", runtime, "--node", node],
+        )
+        report = self.read_report(project)
+        self.assertTrue(report["assembled_code_and_metadata_match"])
+        for mode in ["inline", "package"]:
+            for phase, expected in [("populate", "11"), ("unchanged", "11"), ("leaf_edit", "12")]:
+                executed = report["runs"][mode][phase]["execution"]
+                self.assertEqual(executed, {"error": None, "output": [expected], "options": [["Continue"]]})
+
+        # A separately compiled change must still fail the data comparison after
+        # normalization; ignoring the build identity must not hide code changes.
+        packaged = project / "package"
+        source = packaged / "src/part00.bfl"
+        source.write_text(source.read_text().replace("value + 2", "value + 3", 1))
+        rebuilt = subprocess.run(
+            [str(self.compiler), "build", str(packaged), "--out", str(packaged / "scenes/startup.txt"), "--package"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+        with self.assertRaises(subprocess.CalledProcessError):
+            load_tool("benchmark-packages.py").compare_programs(project, Path(runtime), Path(node))
 
     def test_invalid_arguments_and_existing_outputs_do_not_publish_reports(self):
         for name, arguments in [

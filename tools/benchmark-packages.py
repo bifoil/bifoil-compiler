@@ -177,12 +177,14 @@ def compare_programs(root, runtime, node):
     loader_url = (
         "file:///" + quote(loader, safe="/:") if windows else Path(loader).as_uri()
     )
+    code = path(runtime / "src/program-code.mjs")
+    code_url = "file:///" + quote(code, safe="/:") if windows else Path(code).as_uri()
     script = f"""
         import {{readCompiledProgram}} from {json.dumps(loader_url)};
+        import {{programCode}} from {json.dumps(code_url)};
         import {{isDeepStrictEqual}} from 'node:util';
         const inline = await readCompiledProgram(process.argv[1]);
         const packaged = await readCompiledProgram(process.argv[2]);
-        inline.build = packaged.build = '';
         // Package function dictionaries deliberately have no prototype. Compare
         // protocol data rather than host object prototypes.
         const data = value => {{
@@ -192,7 +194,19 @@ def compare_programs(root, runtime, node):
             }}
             return value;
         }};
-        if (!isDeepStrictEqual(data(inline), data(packaged))) {{
+        const normalized = async program => {{
+            const result = data(program);
+            result.build = '';
+            const provider = programCode(program);
+            for (const [id, fn] of Object.entries(program.functions)) {{
+                const code = provider ? await provider.loadFunction(id) : fn.code;
+                result.functions[id].code = data(code);
+            }}
+            return result;
+        }};
+        const inlineData = await normalized(inline);
+        const packagedData = await normalized(packaged);
+        if (!isDeepStrictEqual(inlineData, packagedData)) {{
             throw Error('inline/package programs differ');
         }}
     """

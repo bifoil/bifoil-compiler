@@ -57,6 +57,7 @@ cargo llvm-cov report --release --remap-path-prefix --lcov --output-path "$tempo
 coverage_command=(uv run --no-project --with coverage==7.17.0 --python python3 python -m coverage)
 "${coverage_command[@]}" erase
 BIFOIL_TEST_COMPILER="$repository_root/target/release/bifoilc" \
+    BIFOIL_TEST_RUNTIME="$runtime_root" BIFOIL_TEST_NODE="$(command -v node)" \
     "${coverage_command[@]}" run -m unittest discover -s tools -p 'test_*.py'
 "${coverage_command[@]}" combine
 "${coverage_command[@]}" xml -o "$temporary_directory/python-coverage.xml"
