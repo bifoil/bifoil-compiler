@@ -83,6 +83,36 @@ pub(super) fn analyze(code: &[Instruction], targets: Vec<Target>, start: Instant
     let Some(blocks) = blocks(code, &stores, words, &offers, start)? else {
         return Ok(vec![]);
     };
+    let Some(incoming) = incoming_writes(&blocks, words, start)? else {
+        return Ok(vec![]);
+    };
+    let mut returned: Option<Vec<u64>> = None;
+    let mut needed = vec![0; words];
+    for (block, incoming) in blocks.iter().zip(incoming) {
+        let Some(mut written) = incoming else { continue };
+        for ((needed, reads), before) in needed.iter_mut().zip(&block.entry_reads).zip(&written) {
+            *needed |= reads & !before;
+        }
+        if block.returns {
+            for (current, generated) in written.iter_mut().zip(&block.written) {
+                *current |= generated;
+            }
+            if let Some(previous) = &mut returned {
+                for (old, new) in previous.iter_mut().zip(written) {
+                    *old &= new;
+                }
+            } else {
+                returned = Some(written);
+            }
+        }
+    }
+    Ok(proven_targets(targets, returned, &needed))
+}
+
+type IncomingWrites = Vec<Option<Vec<u64>>>;
+
+/// Intersect generated writes along every reachable edge before checking returns.
+fn incoming_writes(blocks: &[Block], words: usize, start: Instant) -> Result<Option<IncomingWrites>, String> {
     let mut incoming = vec![None::<Vec<u64>>; blocks.len()];
     incoming[0] = Some(vec![0; words]);
     let mut pending = VecDeque::from([0]);
@@ -92,7 +122,7 @@ pub(super) fn analyze(code: &[Instruction], targets: Vec<Target>, start: Instant
     while let Some(index) = pending.pop_front() {
         steps += 1;
         if steps > MAX_FLOW_STEPS {
-            return Ok(vec![]);
+            return Ok(None);
         }
         if steps % 256 == 0 {
             crate::budget(start)?;
@@ -121,27 +151,7 @@ pub(super) fn analyze(code: &[Instruction], targets: Vec<Target>, start: Instant
             }
         }
     }
-    let mut returned: Option<Vec<u64>> = None;
-    let mut needed = vec![0; words];
-    for (block, incoming) in blocks.iter().zip(incoming) {
-        let Some(mut written) = incoming else { continue };
-        for ((needed, reads), before) in needed.iter_mut().zip(&block.entry_reads).zip(&written) {
-            *needed |= reads & !before;
-        }
-        if block.returns {
-            for (current, generated) in written.iter_mut().zip(&block.written) {
-                *current |= generated;
-            }
-            if let Some(previous) = &mut returned {
-                for (old, new) in previous.iter_mut().zip(written) {
-                    *old &= new;
-                }
-            } else {
-                returned = Some(written);
-            }
-        }
-    }
-    Ok(proven_targets(targets, returned, &needed))
+    Ok(Some(incoming))
 }
 
 /// Preparation cannot suspend or nest another choice. Each lexical preparation
