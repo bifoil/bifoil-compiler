@@ -112,6 +112,56 @@ struct Candidate<'a> {
     compact: bool,
 }
 
+impl<'a> Candidate<'a> {
+    fn new(
+        declaration: usize,
+        function: &'a FunctionAst,
+        delayed: &BTreeMap<&str, DelayedDeclaration>,
+    ) -> Option<Self> {
+        if !supported(function) {
+            return None;
+        }
+        let simple = simple_assignments(function);
+        let writes = if simple {
+            function
+                .body
+                .iter()
+                .filter_map(|statement| match &statement.kind {
+                    StatementKind::Assign { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            super::captures::assigned_names(function)
+        };
+        let targets = writes
+            .into_iter()
+            .filter(|name| delayed.get(name.as_str()).is_some_and(|cell| cell.index < declaration))
+            .collect::<BTreeSet<_>>();
+        if targets.is_empty() {
+            return None;
+        }
+        let protected = targets
+            .iter()
+            .filter(|name| !delayed[name.as_str()].mutable)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let compact = !protected.is_empty()
+            && simple
+            && function.params.is_empty()
+            && function.generics.is_empty()
+            && !function.prose_body
+            && !function.suspend;
+        Some(Self {
+            declaration,
+            function,
+            targets,
+            protected,
+            compact,
+        })
+    }
+}
+
 pub(super) fn discover(
     body: &[Statement],
     owner: &str,
@@ -147,56 +197,14 @@ pub(super) fn discover(
             *declarations.entry(&function.name).or_default() += 1;
         }
     }
-    let mut candidates = Vec::new();
-    for (index, statement) in body.iter().enumerate() {
-        let StatementKind::Function(function) = &statement.kind else {
-            continue;
-        };
-        if !supported(function) {
-            continue;
-        }
-        let simple = simple_assignments(function);
-        let writes = if simple {
-            function
-                .body
-                .iter()
-                .filter_map(|statement| match &statement.kind {
-                    StatementKind::Assign { name, .. } => Some(name.clone()),
-                    _ => None,
-                })
-                .collect()
-        } else {
-            super::captures::assigned_names(function)
-        };
-        let targets = writes
-            .into_iter()
-            .filter(|name| {
-                delayed
-                    .get(name.as_str())
-                    .is_some_and(|declaration| declaration.index < index)
-            })
-            .collect::<BTreeSet<_>>();
-        if !targets.is_empty() {
-            let protected = targets
-                .iter()
-                .filter(|name| !delayed[name.as_str()].mutable)
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            let expand = !protected.is_empty()
-                && simple
-                && function.params.is_empty()
-                && function.generics.is_empty()
-                && !function.prose_body
-                && !function.suspend;
-            candidates.push(Candidate {
-                declaration: index,
-                function,
-                targets,
-                protected,
-                compact: expand,
-            });
-        }
-    }
+    let candidates = body
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| match &statement.kind {
+            StatementKind::Function(function) => Candidate::new(index, function, &delayed),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     if candidates.is_empty() {
         return BTreeMap::new();
     }

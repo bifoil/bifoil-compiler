@@ -1,10 +1,11 @@
 //! Statement sequencing, local-function visibility, and statement lowering.
 
 use super::{
-    Binding, Compiler, FunctionContext, captured_names, insert, local_function_id, lookup, pending_type, signature,
+    Binding, Compiler, FunctionContext, ScopeStack, captured_names, insert, local_function_id, lookup, pending_type,
+    signature,
 };
 use crate::model::{MAX_FUNCTIONS, Op, Type};
-use crate::syntax::{Expr, Statement, StatementKind};
+use crate::syntax::{Expr, FunctionAst, Statement, StatementKind};
 
 impl Compiler {
     pub(super) fn body(&mut self, body: &[Statement], context: &mut FunctionContext) -> Result<bool, String> {
@@ -103,32 +104,7 @@ impl Compiler {
                     }
 
                     StatementKind::Function(f) => {
-                        let sig = lookup(&context.scopes, &f.name)
-                            .unwrap()
-                            .signature_by_id(&local_function_id(&context.function_id, f));
-                        if pending_type(&sig.result) {
-                            return Err("cannot infer local function result; add an annotation".into());
-                        }
-                        // Names follow definition-site visibility, although the
-                        // closure cells are installed at the start of this block.
-                        let names = if self
-                            .single_use_initializers
-                            .get(&sig.id)
-                            .is_some_and(|plan| plan.expands())
-                        {
-                            vec![]
-                        } else {
-                            super::captures::runtime_capture_names(&captured_names(f), &context.scopes)
-                        };
-                        let site = closure_sites[&sig.id];
-                        // Complete the placeholder emitted for this declaration above.
-                        context.instructions[site].op = Op::Closure {
-                            name: sig.id.clone(),
-                            function: sig.id.clone(),
-                            captures: Some(names),
-                        };
-                        let environment = super::captures::named_environment(&context.scopes, &entry);
-                        self.check_local_definition(f, sig, environment, context)?;
+                        self.finish_local_function(f, &entry, &closure_sites, context)?;
                     }
                     StatementKind::Variable {
                         name,
@@ -190,5 +166,40 @@ impl Compiler {
             self.check_budget(context)?;
         }
         Ok(!context.is_reachable)
+    }
+
+    fn finish_local_function(
+        &mut self,
+        function: &FunctionAst,
+        entry: &ScopeStack,
+        closure_sites: &std::collections::BTreeMap<String, usize>,
+        context: &mut FunctionContext,
+    ) -> Result<(), String> {
+        let sig = lookup(&context.scopes, &function.name)
+            .unwrap()
+            .signature_by_id(&local_function_id(&context.function_id, function));
+        if pending_type(&sig.result) {
+            return Err("cannot infer local function result; add an annotation".into());
+        }
+        // Names follow definition-site visibility, although the closure cells
+        // are installed at the start of this block.
+        let names = if self
+            .single_use_initializers
+            .get(&sig.id)
+            .is_some_and(|plan| plan.expands())
+        {
+            vec![]
+        } else {
+            super::captures::runtime_capture_names(&captured_names(function), &context.scopes)
+        };
+        let site = closure_sites[&sig.id];
+        // Complete the placeholder emitted for this declaration above.
+        context.instructions[site].op = Op::Closure {
+            name: sig.id.clone(),
+            function: sig.id.clone(),
+            captures: Some(names),
+        };
+        let environment = super::captures::named_environment(&context.scopes, entry);
+        self.check_local_definition(function, sig, environment, context)
     }
 }
