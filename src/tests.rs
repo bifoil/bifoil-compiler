@@ -76,6 +76,7 @@ mod nonempty_values;
 mod normalization_scopes;
 mod overload_captures;
 mod overloaded_callbacks;
+mod pattern_boundaries;
 mod private_members;
 mod projected_field_writes;
 mod projected_inputs;

@@ -109,6 +109,7 @@ fn coverage_constants_retain_numeric_checks_and_pinned_fairmath_endpoints() {
         binary("/", Expr::Int(1), Expr::Int(0)),
         binary("%", Expr::Int(1), Expr::Int(0)),
         binary("+", Expr::Int(2147483647), Expr::Int(1)),
+        binary("-", Expr::Int(-2147483648), Expr::Int(1)),
         binary("*", Expr::Float(f64::MAX), Expr::Float(2.0)),
         binary("%+", Expr::Int(-1), Expr::Name("unknown".into())),
         Expr::Float(f64::NAN),
