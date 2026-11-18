@@ -40,6 +40,24 @@ fn candidates() -> Vec<Type> {
         callable(Type::Any, Type::Int, false),
         callable(Type::Int.nullable(), Type::String.nullable(), false),
         callable(Type::Int, Type::String, true),
+        Type::Function {
+            params: vec![].into(),
+            result: Arc::new(Type::String),
+            suspend: false,
+            vararg: false,
+        },
+        Type::Function {
+            params: vec![Type::Int, Type::String].into(),
+            result: Arc::new(Type::String),
+            suspend: false,
+            vararg: false,
+        },
+        Type::Function {
+            params: vec![Type::Int].into(),
+            result: Arc::new(Type::String),
+            suspend: false,
+            vararg: true,
+        },
         Type::Scene { params: vec![].into() },
         Type::Scene {
             params: vec![Type::Int].into(),
@@ -86,6 +104,19 @@ fn coverage_common_types_do_not_invent_universal_types_or_mutable_copies() {
     let projection = Type::named("MutableList", vec![Type::Star]);
     assert_eq!(query.meet(&projection, &mutable).unwrap(), Some(mutable.clone()));
     assert_eq!(query.meet(&mutable, &projection).unwrap(), Some(mutable));
+}
+
+#[test]
+fn repeated_shared_type_queries_preserve_their_relationship_and_original_arguments() {
+    let mut query = Common::default();
+    let original = Type::named("List", vec![Type::Int]);
+    let shared = original.clone();
+    for _ in 0..3 {
+        assert_eq!(query.join(&original, &shared).unwrap(), Some(original.clone()));
+        assert_eq!(query.meet(&original, &shared).unwrap(), Some(original.clone()));
+    }
+    assert_eq!(original, Type::named("List", vec![Type::Int]));
+    assert_eq!(shared, original);
 }
 
 #[test]

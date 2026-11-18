@@ -118,3 +118,6 @@ fn prose_content(raw: &str, mut width: usize) -> (&str, usize) {
     }
     (&raw[offset..], residual)
 }
+
+#[cfg(test)]
+mod tests;
