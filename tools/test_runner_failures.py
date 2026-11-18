@@ -1,9 +1,9 @@
 """Conformance diagnostics must fail closed and preserve original inputs."""
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from test_support import load_tool
@@ -104,6 +104,31 @@ class RunnerFailureTests(unittest.TestCase):
                 child.assert_not_called()
             with self.assertRaisesRegex(ValueError, "case ids"):
                 runner.run_case({"id": "INVALID"}, *args[1:])
+
+    def test_windows_execution_uses_an_owned_temporary_project_beside_the_indexes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            index = root / "conformance/cases.json"
+            index.parent.mkdir()
+            temporary_parent = root / ".bifoil/development/conformance"
+            seen = []
+
+            def child(phase, command, _timeout):
+                if phase == "compilation":
+                    project = Path(command[2])
+                    self.assertTrue(project.is_relative_to(temporary_parent))
+                    self.assertIn("--package", command)
+                    seen.append(project)
+                    return completed()
+                return completed(stdout=json.dumps({"error": None, "output": [], "options": []}))
+
+            with patch.object(runner, "run_child", side_effect=child):
+                self.assertIsNone(runner.run_case({"id": "owned", "source": ""}, index,
+                                                Path("compiler"), Path("runtime"), "node.exe", True, None,
+                                                packaged=True))
+            self.assertEqual(len(seen), 1)
+            self.assertFalse(seen[0].exists())
+            self.assertEqual(list(temporary_parent.iterdir()), [])
 
     def test_directory_cases_include_legacy_sources_and_explicit_engine_only(self):
         with tempfile.TemporaryDirectory() as directory:

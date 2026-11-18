@@ -14,6 +14,8 @@ from urllib.parse import quote
 
 from process_measurement import measure
 
+STARTUP_SCENE = "startup.txt"
+
 
 def checksum(path):
     digest = hashlib.sha256()
@@ -97,9 +99,40 @@ def execute(output, expected, config, runtime, node):
     return actual
 
 
+def check_published_files(phase, packaged, written, current, initial_files):
+    if phase == "unchanged" and written:
+        raise RuntimeError("unchanged build replaced output files")
+    if phase == "leaf_edit" and packaged:
+        changed_code = [name for name in written if name.startswith("bifoil_code_")]
+        if len(changed_code) != 1 or STARTUP_SCENE not in written:
+            raise RuntimeError(
+                "leaf edit did not replace exactly one code scene and its root"
+            )
+        if any(
+            current.get(name) != record
+            for name, record in initial_files.items()
+            if name != STARTUP_SCENE
+        ):
+            raise RuntimeError("immutable code scenes changed after publication")
+
+
+def check_measurement(result, phase, modules):
+    if result["compiler_peak_rss_bytes"] >= 250_000_000:
+        raise RuntimeError("bounded workload exceeded the memory contract")
+    if phase != "populate" and result["wall_seconds"] >= 10:
+        raise RuntimeError("bounded incremental build exceeded ten seconds")
+    expected_cache = None
+    if phase == "unchanged":
+        expected_cache = f"0 compiled, {modules + 1} reused"
+    elif phase == "leaf_edit":
+        expected_cache = f"2 compiled, {modules - 1} reused"
+    if expected_cache and expected_cache not in result["stdout"]:
+        raise RuntimeError("unexpected module reuse summary")
+
+
 def benchmark(compiler, root, packaged, options, config):
     generate(root, options.modules, options.functions)
-    output = root / "scenes/startup.txt"
+    output = root / "scenes" / STARTUP_SCENE
     command = [str(compiler), "build", str(root), "--out", str(output)]
     if packaged:
         command.append("--package")
@@ -122,40 +155,17 @@ def benchmark(compiler, root, packaged, options, config):
         }
         result["written_files"] = sorted(written)
         result["written_bytes"] = sum(record["bytes"] for record in written.values())
-        result["root_sha256"] = current["startup.txt"]["sha256"]
-        result["root_bytes"] = current["startup.txt"]["bytes"]
+        result["root_sha256"] = current[STARTUP_SCENE]["sha256"]
+        result["root_bytes"] = current[STARTUP_SCENE]["bytes"]
         if phase == "populate":
             initial_files = current
-        if phase == "unchanged" and result["written_files"]:
-            raise RuntimeError("unchanged build replaced output files")
-        if phase == "leaf_edit" and packaged:
-            changed_code = [name for name in written if name.startswith("bifoil_code_")]
-            if len(changed_code) != 1 or "startup.txt" not in written:
-                raise RuntimeError(
-                    "leaf edit did not replace exactly one code scene and its root"
-                )
-            if any(
-                current.get(name) != record
-                for name, record in initial_files.items()
-                if name != "startup.txt"
-            ):
-                raise RuntimeError("immutable code scenes changed after publication")
+        check_published_files(phase, packaged, written, current, initial_files)
         if options.runtime:
             expected = options.modules * 11 + (1 if phase == "leaf_edit" else 0)
             result["execution"] = execute(
                 output, expected, config, options.runtime, options.node
             )
-        if result["compiler_peak_rss_bytes"] >= 250_000_000:
-            raise RuntimeError("bounded workload exceeded the memory contract")
-        if phase != "populate" and result["wall_seconds"] >= 10:
-            raise RuntimeError("bounded incremental build exceeded ten seconds")
-        expected_cache = None
-        if phase == "unchanged":
-            expected_cache = f"0 compiled, {options.modules + 1} reused"
-        elif phase == "leaf_edit":
-            expected_cache = f"2 compiled, {options.modules - 1} reused"
-        if expected_cache and expected_cache not in result["stdout"]:
-            raise RuntimeError("unexpected module reuse summary")
+        check_measurement(result, phase, options.modules)
     return results
 
 

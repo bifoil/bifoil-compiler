@@ -9,11 +9,11 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 from capacity_workload import NarrativeCapacity
 from process_measurement import measure
@@ -86,19 +86,18 @@ class CapacityExperiment:
         self.report["initial_leaf_mtime_ns"] = self.leaf.stat().st_mtime_ns
 
     def record(self):
-        temporary = None
+        descriptor, name = tempfile.mkstemp(dir=self.project,
+                prefix=".capacity-report-", suffix=".json")
+        temporary = Path(name)
         try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=self.project,
-                    prefix=".capacity-report-", suffix=".json", delete=False) as output:
-                temporary = Path(output.name)
+            with os.fdopen(descriptor, "w", encoding="utf8") as output:
                 json.dump(self.report, output, indent=2)
                 output.write("\n")
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, self.report_path)
         finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
 
     def observe(self, label, arguments, *, incremental=False, artifact=False):
         arguments = list(map(str, arguments))
@@ -130,7 +129,7 @@ class CapacityExperiment:
         node = self.options.node.resolve()
         script = self.options.runtime / "tools/verify-narrative-capacity.mjs"
         result = subprocess.run([str(node), node_path(script, node), node_path(path, node), node_path(config, node)],
-                                text=True, capture_output=True)
+                                text=True, capture_output=True, check=False)
         self.report["verification"][label] = {
             "status": result.returncode, "stdout": result.stdout, "stderr": result.stderr,
             "verifier_sha256": checksum(script),

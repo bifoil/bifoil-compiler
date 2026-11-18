@@ -1,8 +1,12 @@
 """Reject malformed acceptance inputs before starting compiler/runtime processes."""
 import argparse
+import io
+import json
 import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -91,6 +95,7 @@ class CaseValidation(unittest.TestCase):
 
     def test_explicit_windows_translation_and_native_fallback(self):
         runner.native_path.cache_clear()
+
         with patch.object(runner.subprocess, "check_output", return_value="C:\\project\\source\n") as convert:
             self.assertEqual(runner.native_path("/mnt/c/project/source", True), "C:\\project\\source")
             convert.assert_called_once()
@@ -98,6 +103,20 @@ class CaseValidation(unittest.TestCase):
             self.assertEqual(runner.native_path("/tmp/project", True), "/tmp/project")
             self.assertEqual(runner.native_path("/tmp/project", False), "/tmp/project")
         runner.native_path.cache_clear()
+
+    def test_nonarray_case_indexes_fail_before_any_child_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            index = Path(temporary) / "cases.json"
+            index.write_text(json.dumps({"id": "not-an-array"}))
+            arguments = ["run-conformance.py", "--compiler", "compiler", "--runtime", "runtime",
+                         "--node", "node", "--cases", str(index)]
+            with (
+                patch.object(sys, "argv", arguments), redirect_stdout(io.StringIO()),
+                patch.object(runner, "run_child") as child,
+                self.assertRaisesRegex(ValueError, "case index must be an array"),
+            ):
+                runner.main()
+            child.assert_not_called()
 
     def test_failed_process_diagnostics_keep_signal_status_and_output(self):
         for status, stderr, stdout, expected in [(1, "", "", "no output"),

@@ -256,8 +256,10 @@ class BenchmarkCommands(NativeCompilerTest):
             capture_output=True, text=True, timeout=30, check=False,
         )
         self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+        comparison = load_tool("benchmark-packages.py")
+        runtime_path, node_path = Path(runtime), Path(node)
         with self.assertRaises(subprocess.CalledProcessError):
-            load_tool("benchmark-packages.py").compare_programs(project, Path(runtime), Path(node))
+            comparison.compare_programs(project, runtime_path, node_path)
 
     def test_invalid_arguments_and_existing_outputs_do_not_publish_reports(self):
         for name, arguments in [

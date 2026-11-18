@@ -76,6 +76,44 @@ class ObservationFailureTests(NativeCompilerTest):
             with self.subTest(script=script, phase=phase):
                 self.corrupt_phase(script, [], phase, remove_summary, message)
 
+    def test_dependency_edits_cannot_change_the_consumer_source(self):
+        def corrupt_consumer(command, _result):
+            source = Path(command[2]) / "src/main.bfl"
+            source.write_text(source.read_text() + "\n")
+        project = self.corrupt_phase(
+            "benchmark-cache-import.py", ["--workload", "nominal-consumer"], 4,
+            corrupt_consumer, "changed its consumer source",
+        )
+        report = self.read_report(project)
+        self.assertNotEqual(report["runs"]["populate"]["source_sha256"]["main.bfl"],
+                            report["runs"]["dependency_edit"]["source_sha256"]["main.bfl"])
+
+    def test_code_measurements_reject_a_changed_owned_compiler_copy(self):
+        compiler = self.root / "owned-compiler"
+        shutil.copy2(self.compiler, compiler)
+        original = process_measurement.measure
+        calls = 0
+
+        def measured(command):
+            nonlocal calls
+            result = original(command)
+            self.assertEqual(result["status"], 0, result["stderr"])
+            calls += 1
+            if calls == 8:
+                with compiler.open("ab") as executable:
+                    executable.write(b"owned test identity change")
+            return result
+
+        project = self.root / "compiler-identity"
+        shared_identity = self.compiler.read_bytes()
+        with (
+            patch.object(process_measurement, "measure", side_effect=measured),
+            self.assertRaisesRegex(RuntimeError, "compiler changed during measurement"),
+        ):
+            self.run_tool("benchmark-code.py", [compiler, project, "--modules", 1, "--routines", 2, "--additions", 1])
+        self.assertFalse(self.read_report(project)["compiler_unchanged"])
+        self.assertEqual(self.compiler.read_bytes(), shared_identity)
+
     def test_precompiled_publication_failures_retain_the_original_source(self):
         def reject_publication(_command, result):
             result["status"] = 1

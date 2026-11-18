@@ -133,7 +133,7 @@ class CapacityFailureControls(NativeCompilerTest):
         experiment.record()
         previous = experiment.report_path.read_bytes()
         with (
-            patch.object(benchmark.tempfile, "NamedTemporaryFile", side_effect=OSError("no temporary file")),
+            patch.object(benchmark.tempfile, "mkstemp", side_effect=OSError("no temporary file")),
             self.assertRaisesRegex(OSError, "no temporary file"),
         ):
             experiment.record()
@@ -190,6 +190,25 @@ class CapacityFailureControls(NativeCompilerTest):
         self.assertTrue(experiment.report["leaf_edit"]["same_size"])
         self.assertTrue(experiment.report["leaf_edit"]["same_mtime"])
         self.assertEqual(experiment.report["verification"], {})
+
+    def test_a_changed_edit_timestamp_fails_before_running_the_compiler(self):
+        experiment = self.experiment()
+        previous = experiment.leaf.stat().st_mtime_ns
+        real_utime = benchmark.os.utime
+
+        def changed_timestamp(path, *, ns):
+            real_utime(path, ns=(ns[0], ns[1] + 2_000_000_000))
+
+        with (
+            patch.object(benchmark.os, "utime", side_effect=changed_timestamp),
+            patch.object(experiment, "observe") as observe,
+            self.assertRaisesRegex(RuntimeError, "preserve size and timestamp"),
+        ):
+            experiment.edit_leaf()
+        observe.assert_not_called()
+        self.assertNotEqual(experiment.leaf.stat().st_mtime_ns, previous)
+        self.assertTrue(experiment.report["leaf_edit"]["same_size"])
+        self.assertFalse(experiment.report["leaf_edit"]["same_mtime"])
 
     def populated_cache(self, experiment):
         cache = experiment.project / ".bifoil/cache/v1"

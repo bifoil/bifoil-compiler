@@ -1,7 +1,6 @@
 """Independent dimension, ownership, and compiler checks for capacity inputs."""
 
 import hashlib
-import json
 import os
 import unittest
 from unittest.mock import patch
@@ -81,6 +80,13 @@ class CapacityProjects(NativeCompilerTest):
         with self.assertRaisesRegex(ValueError, "disk reserve"):
             spec.write(empty, minimum_free_bytes=10**30)
         self.assertFalse(empty.exists())
+
+    def test_a_missing_parent_is_rejected_before_creating_any_workload_files(self):
+        directory = self.root / "absent-parent/project"
+        workload = NarrativeCapacity(1, 1)
+        with self.assertRaisesRegex(ValueError, "output parent must already exist"):
+            workload.write(directory)
+        self.assertFalse(directory.parent.exists())
 
 
 class CapacityBenchmark(NativeCompilerTest):
