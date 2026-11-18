@@ -204,7 +204,180 @@ pub(super) fn case_bindings(case: &WhenCase, subject: Option<&Type>) -> Result<V
     Ok(joined.unwrap_or_default().into_iter().collect())
 }
 
+struct WhenTest<'a> {
+    subject: Option<&'a Expr>,
+    ty: Option<&'a Type>,
+    temporary: &'a str,
+    line: usize,
+}
+
 impl Compiler {
+    fn emit_when_test(
+        &mut self,
+        pattern: &Pattern,
+        test: &WhenTest<'_>,
+        context: &mut FunctionContext,
+        stable: &mut bool,
+    ) -> Result<(), String> {
+        match pattern {
+            Pattern::Value(value) => {
+                if let Some(subject) = test.ty {
+                    context.emit(
+                        Op::Load {
+                            name: test.temporary.into(),
+                        },
+                        test.line,
+                    );
+                    let actual = self.expression_as(value, context, test.line, Some(subject))?;
+                    binary_type("==", subject, &actual)?;
+                    context.emit(Op::Binary { operator: "==".into() }, test.line);
+                } else if !Type::Boolean.accepts(&self.expression(value, context, test.line)?) {
+                    return Err("subjectless case requires Boolean".into());
+                }
+                *stable &= pure_expression(value);
+            }
+            Pattern::Membership { value, negate } => {
+                let subject = test.ty.ok_or("membership case requires a subject")?;
+                context.emit(
+                    Op::Load {
+                        name: test.temporary.into(),
+                    },
+                    test.line,
+                );
+                let actual = self.expression(value, context, test.line)?;
+                let operator = if *negate { "!in" } else { "in" };
+                binary_type(operator, subject, &actual)?;
+                context.emit(
+                    Op::Binary {
+                        operator: operator.into(),
+                    },
+                    test.line,
+                );
+                *stable &= pure_expression(value);
+            }
+            Pattern::Type { ty, negate, .. } => {
+                if test.ty.is_none() {
+                    return Err("type pattern requires a subject".into());
+                }
+                context.emit(
+                    Op::Load {
+                        name: test.temporary.into(),
+                    },
+                    test.line,
+                );
+                context.emit(
+                    Op::TypeTest {
+                        ty: ty.clone(),
+                        negate: *negate,
+                    },
+                    test.line,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit alternatives in order, joining successful facts and retaining failed-test effects.
+    fn when_alternatives(
+        &mut self,
+        case: &WhenCase,
+        test: &WhenTest<'_>,
+        bindings: &[(String, Type)],
+        context: &mut FunctionContext,
+        stable: &mut bool,
+    ) -> Result<(Vec<super::ScopeStack>, Vec<usize>), String> {
+        let mut matches = vec![];
+        let mut matched = vec![];
+        for pattern in &case.patterns {
+            self.emit_when_test(pattern, test, context, stable)?;
+            // Each successful alternative skips the remaining tests.
+            // The failed path retains effects before trying the next one.
+            let known = match pattern {
+                Pattern::Value(value) => {
+                    if let Some(subject) = test.subject {
+                        super::constants::constant_comparison("==", subject, value)
+                    } else {
+                        super::constants::constant_boolean(value)
+                    }
+                }
+                _ => None,
+            };
+            if context.is_reachable && known != Some(false) {
+                let mut matched = context.scopes.clone();
+                if let Pattern::Value(value) = pattern
+                    && test.subject.is_none()
+                {
+                    super::narrow_condition(value, &mut matched, true);
+                }
+                matches.push(matched);
+            }
+            context.is_reachable &= known != Some(true);
+            if let Pattern::Value(value) = pattern
+                && test.subject.is_none()
+            {
+                super::narrow_condition(value, &mut context.scopes, false);
+            }
+            let fail = context.emit(Op::JumpFalse { target: 0 }, case.line);
+            context.emit(Op::Enter, case.line);
+            for (name, field, actual) in pattern_bindings(pattern)? {
+                let expected = bindings.iter().find(|(n, _)| n == &name).unwrap().1.clone();
+                context.emit(
+                    Op::Load {
+                        name: test.temporary.into(),
+                    },
+                    case.line,
+                );
+                context.emit(
+                    Op::Member {
+                        name: field,
+                        ty: actual.clone(),
+                        function: None,
+                    },
+                    case.line,
+                );
+                context.convert(&actual, &expected, case.line)?;
+                context.emit(
+                    Op::Declare {
+                        name,
+                        ty: expected,
+                        mutable: false,
+                    },
+                    case.line,
+                );
+            }
+            matched.push(context.emit(Op::Jump { target: 0 }, case.line));
+            context.patch(fail, context.instructions.len());
+        }
+        Ok((matches, matched))
+    }
+
+    /// Keep guard failures available to later cases after discarding payload-local names.
+    fn when_guard(
+        &mut self,
+        case: &WhenCase,
+        context: &mut FunctionContext,
+        stable: &mut bool,
+        unmatched: &mut Vec<super::ScopeStack>,
+        outer_depth: usize,
+    ) -> Result<Option<usize>, String> {
+        let Some(guard) = &case.guard else {
+            return Ok(None);
+        };
+        if !Type::Boolean.accepts(&self.expression(guard, context, case.line)?) {
+            return Err("case guard requires Boolean".into());
+        }
+        *stable &= pure_expression(guard);
+        let known = super::constants::constant_boolean(guard);
+        if context.is_reachable && known != Some(true) {
+            let mut failed = super::captures::leaving_scopes(&context.scopes, outer_depth)?;
+            super::narrow_condition(guard, &mut failed, false);
+            unmatched.push(failed);
+        }
+        context.is_reachable &= known != Some(false);
+        super::narrow_condition(guard, &mut context.scopes, true);
+        Ok(Some(context.emit(Op::JumpFalse { target: 0 }, case.line)))
+    }
+
     pub(super) fn when_statement(
         &mut self,
         subject: &Option<Expr>,
@@ -284,125 +457,18 @@ impl Compiler {
                 super::invalidate_narrowing(&mut context.scopes);
             }
             context.is_reachable = remaining.is_some();
-            let mut matches = vec![];
             let bindings = case_bindings(case, subject_type.as_ref())?;
-            let mut matched = vec![];
-            if !case.fallback {
-                for pattern in &case.patterns {
-                    match pattern {
-                        Pattern::Value(value) => {
-                            if let Some(subject) = &subject_type {
-                                context.emit(
-                                    Op::Load {
-                                        name: temporary.clone(),
-                                    },
-                                    case.line,
-                                );
-                                let actual = self.expression_as(value, context, case.line, Some(subject))?;
-                                binary_type("==", subject, &actual)?;
-                                context.emit(Op::Binary { operator: "==".into() }, case.line);
-                            } else if !Type::Boolean.accepts(&self.expression(value, context, case.line)?) {
-                                return Err("subjectless case requires Boolean".into());
-                            }
-                            stable &= pure_expression(value);
-                        }
-                        Pattern::Membership { value, negate } => {
-                            let subject = subject_type.as_ref().ok_or("membership case requires a subject")?;
-                            context.emit(
-                                Op::Load {
-                                    name: temporary.clone(),
-                                },
-                                case.line,
-                            );
-                            let actual = self.expression(value, context, case.line)?;
-                            let operator = if *negate { "!in" } else { "in" };
-                            binary_type(operator, subject, &actual)?;
-                            context.emit(
-                                Op::Binary {
-                                    operator: operator.into(),
-                                },
-                                case.line,
-                            );
-                            stable &= pure_expression(value);
-                        }
-                        Pattern::Type { ty, negate, .. } => {
-                            if subject_type.is_none() {
-                                return Err("type pattern requires a subject".into());
-                            }
-                            context.emit(
-                                Op::Load {
-                                    name: temporary.clone(),
-                                },
-                                case.line,
-                            );
-                            context.emit(
-                                Op::TypeTest {
-                                    ty: ty.clone(),
-                                    negate: *negate,
-                                },
-                                case.line,
-                            );
-                        }
-                    }
-                    // Each successful alternative skips the remaining tests.
-                    // The failed path retains effects before trying the next one.
-                    let known = match pattern {
-                        Pattern::Value(value) => {
-                            if let Some(subject) = subject {
-                                super::constants::constant_comparison("==", subject, value)
-                            } else {
-                                super::constants::constant_boolean(value)
-                            }
-                        }
-                        _ => None,
-                    };
-                    if context.is_reachable && known != Some(false) {
-                        let mut matched = context.scopes.clone();
-                        if let Pattern::Value(value) = pattern
-                            && subject.is_none()
-                        {
-                            super::narrow_condition(value, &mut matched, true);
-                        }
-                        matches.push(matched);
-                    }
-                    context.is_reachable &= known != Some(true);
-                    if let Pattern::Value(value) = pattern
-                        && subject.is_none()
-                    {
-                        super::narrow_condition(value, &mut context.scopes, false);
-                    }
-                    let fail = context.emit(Op::JumpFalse { target: 0 }, case.line);
-                    context.emit(Op::Enter, case.line);
-                    for (name, field, actual) in pattern_bindings(pattern)? {
-                        let expected = bindings.iter().find(|(n, _)| n == &name).unwrap().1.clone();
-                        context.emit(
-                            Op::Load {
-                                name: temporary.clone(),
-                            },
-                            case.line,
-                        );
-                        context.emit(
-                            Op::Member {
-                                name: field,
-                                ty: actual.clone(),
-                                function: None,
-                            },
-                            case.line,
-                        );
-                        context.convert(&actual, &expected, case.line)?;
-                        context.emit(
-                            Op::Declare {
-                                name,
-                                ty: expected,
-                                mutable: false,
-                            },
-                            case.line,
-                        );
-                    }
-                    matched.push(context.emit(Op::Jump { target: 0 }, case.line));
-                    context.patch(fail, context.instructions.len());
-                }
-            }
+            let test = WhenTest {
+                subject: subject.as_ref(),
+                ty: subject_type.as_ref(),
+                temporary: &temporary,
+                line: case.line,
+            };
+            let (mut matches, matched) = if case.fallback {
+                (vec![], vec![])
+            } else {
+                self.when_alternatives(case, &test, &bindings, context, &mut stable)?
+            };
             if case.fallback && context.is_reachable {
                 matches.push(context.scopes.clone());
             }
@@ -461,23 +527,7 @@ impl Compiler {
             if case.fallback && null_covered {
                 super::flow::narrow_when_remainder(binding.as_deref(), original, &mut context.scopes);
             }
-            let guarded = if let Some(guard) = &case.guard {
-                if !Type::Boolean.accepts(&self.expression(guard, context, case.line)?) {
-                    return Err("case guard requires Boolean".into());
-                }
-                stable &= pure_expression(guard);
-                let known = super::constants::constant_boolean(guard);
-                if context.is_reachable && known != Some(true) {
-                    let mut failed = super::captures::leaving_scopes(&context.scopes, base.len())?;
-                    super::narrow_condition(guard, &mut failed, false);
-                    unmatched.push(failed);
-                }
-                context.is_reachable &= known != Some(false);
-                super::narrow_condition(guard, &mut context.scopes, true);
-                Some(context.emit(Op::JumpFalse { target: 0 }, case.line))
-            } else {
-                None
-            };
+            let guarded = self.when_guard(case, context, &mut stable, &mut unmatched, base.len())?;
             remaining = (!unmatched.is_empty()).then(|| merge_env(&base, &unmatched));
             self.body(&case.body, context)?;
             context.exit_scope()?;
