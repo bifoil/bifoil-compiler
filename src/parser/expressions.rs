@@ -5,6 +5,10 @@ use crate::lexer::{Token, name, symbol};
 use crate::syntax::{Expr, FunctionAst, Parameter, Statement, StatementKind};
 
 impl Cursor {
+    fn any_keyword(&mut self, choices: &[&str]) -> Option<String> {
+        choices.iter().find(|word| self.kw(word)).map(|word| (*word).to_owned())
+    }
+
     pub(super) fn arguments(&mut self, depth: usize) -> Result<Vec<(Option<String>, Expr)>, ParseError> {
         let mut args = vec![];
         if self.sym(")") {
@@ -134,20 +138,14 @@ impl Cursor {
                 label: None,
                 value,
             }
-        } else if self.kw("break") || self.kw("continue") {
-            let Token::Name(kind) = self.tokens[self.position - 1].clone() else {
-                unreachable!()
-            };
+        } else if let Some(kind) = self.any_keyword(&["break", "continue"]) {
             let label = if self.sym("@") { Some(self.ident()?) } else { None };
             Expr::Transfer {
                 kind,
                 label,
                 value: None,
             }
-        } else if self.kw("goto") || self.kw("visit") {
-            let Token::Name(kind) = self.tokens[self.position - 1].clone() else {
-                unreachable!()
-            };
+        } else if let Some(kind) = self.any_keyword(&["goto", "visit"]) {
             Expr::Transfer {
                 kind,
                 label: None,

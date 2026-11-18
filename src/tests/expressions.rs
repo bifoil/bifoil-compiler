@@ -1,6 +1,107 @@
 //! Scalar expressions, calls, and effects using original Bifoil programs.
 
 use super::compile;
+use crate::syntax::{Expr, StatementKind};
+
+fn parsed_expression(source: &str) -> Expr {
+    let mut parsed = crate::parser::parse(&format!("fun literal_value() = {source}\n"), "src/literals.bfl").unwrap();
+    let statement = parsed.functions.remove(0).body.remove(0);
+    match statement.kind {
+        StatementKind::Expression(value) | StatementKind::Return(Some(value)) => value,
+        _ => panic!("expression fixture lost its function body"),
+    }
+}
+
+#[test]
+fn numeric_literal_prefixes_preserve_radix_and_reject_unrepresentable_values() {
+    for (source, expected) in [("0x2A", 42), ("0X2a", 42), ("0b1001", 9), ("0B10_01", 9)] {
+        assert!(
+            matches!(parsed_expression(source), Expr::Int(value) if value == expected),
+            "{source}"
+        );
+        compile(&format!("fun literal_value() = {source}\n")).unwrap();
+    }
+    assert!(matches!(parsed_expression("1e3"), Expr::Float(value) if value == 1000.0));
+    for (source, message) in [
+        ("0x8000000000000000".to_owned(), "invalid hexadecimal Int"),
+        (format!("0b1{}", "0".repeat(63)), "invalid binary Int"),
+        ("1e999".to_owned(), "non-finite Float literal"),
+    ] {
+        assert!(
+            crate::parser::parse(&format!("fun literal_value() = {source}\n"), "src/literals.bfl")
+                .unwrap_err()
+                .contains(message),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn character_literals_preserve_one_unicode_scalar_and_reject_interpolation() {
+    assert!(matches!(parsed_expression("'😀'"), Expr::Char(value) if value == "😀"));
+    for (source, message) in [
+        ("'${1}'", "Char cannot interpolate"),
+        ("''", "Char must contain exactly one Unicode scalar"),
+        ("'ab'", "Char must contain exactly one Unicode scalar"),
+    ] {
+        assert!(
+            crate::parser::parse(&format!("fun literal_value() = {source}\n"), "src/literals.bfl")
+                .unwrap_err()
+                .contains(message),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn recursive_prefix_depth_and_unfinished_generic_probes_fail_at_the_existing_boundaries() {
+    parsed_expression(&format!("{}1", "- ".repeat(62)));
+    assert!(
+        crate::parser::parse(
+            &format!("fun literal_value() = {}1\n", "- ".repeat(66)),
+            "src/literals.bfl"
+        )
+        .unwrap_err()
+        .contains("expression nesting budget exceeded")
+    );
+    assert!(crate::parser::parse("fun literal_value() = callback<Int>\n", "src/literals.bfl").is_err());
+}
+
+#[test]
+fn fairmath_on_either_side_of_another_operator_requires_explicit_grouping() {
+    for operator in ["%+", "%-"] {
+        for expression in [format!("1 == 2 {operator} 3"), format!("1 {operator} 2 + 3")] {
+            assert!(
+                crate::parser::parse(&format!("fun literal_value() = {expression}\n"), "src/literals.bfl")
+                    .unwrap_err()
+                    .contains("fairmath combinations require explicit parentheses"),
+                "{expression}"
+            );
+        }
+        parsed_expression(&format!("1 == (2 {operator} 3)"));
+        parsed_expression(&format!("(1 {operator} 2) + 3"));
+    }
+}
+
+#[test]
+fn transfer_keywords_keep_their_selected_kind_labels_and_destination_expressions() {
+    for (source, expected, labelled) in [
+        ("break@outer", "break", true),
+        ("continue@outer", "continue", true),
+        ("goto destination()", "goto", false),
+        ("visit destination()", "visit", false),
+    ] {
+        let Expr::Transfer { kind, label, value } = parsed_expression(source) else {
+            panic!("transfer disappeared");
+        };
+        assert_eq!(kind, expected);
+        assert_eq!(label.as_deref(), labelled.then_some("outer"));
+        assert_eq!(value.is_some(), !labelled);
+        if let Some(value) = value {
+            assert!(matches!(*value, Expr::Call(..)));
+        }
+    }
+}
 
 #[test]
 fn constant_failures_and_nesting_have_diagnostics() {
