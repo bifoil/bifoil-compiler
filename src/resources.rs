@@ -8,6 +8,10 @@ pub(crate) fn initialize() -> Result<(), String> {
     memory_limit()
 }
 
+fn checked_system_call(success: bool, message: &str) -> Result<(), String> {
+    if success { Ok(()) } else { Err(message.to_owned()) }
+}
+
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn allocator_policy() -> Result<(), String> {
     use std::ffi::c_int;
@@ -18,10 +22,10 @@ fn allocator_policy() -> Result<(), String> {
     }
     // No worker exists yet. This changes only this process's allocation policy
     // and leaves the stricter existing address-space limit intact.
-    if unsafe { mallopt(M_ARENA_MAX, 1) } == 0 {
-        return Err("cannot bound compiler allocator arenas".into());
-    }
-    Ok(())
+    checked_system_call(
+        unsafe { mallopt(M_ARENA_MAX, 1) } != 0,
+        "cannot bound compiler allocator arenas",
+    )
 }
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn allocator_policy() -> Result<(), String> {
@@ -41,17 +45,30 @@ fn memory_limit() -> Result<(), String> {
     }
     let mut limit = RLimit { current: 0, maximum: 0 };
     unsafe {
-        if getrlimit(9, &mut limit) != 0 {
-            return Err("cannot inspect compiler memory limit".into());
-        }
+        checked_system_call(getrlimit(9, &mut limit) == 0, "cannot inspect compiler memory limit")?;
         limit.current = limit.current.min(240_000_000);
-        if setrlimit(9, &limit) != 0 {
-            return Err("cannot enforce compiler memory limit".into());
-        }
+        checked_system_call(setrlimit(9, &limit) == 0, "cannot enforce compiler memory limit")?;
     }
     Ok(())
 }
 #[cfg(not(target_os = "linux"))]
 fn memory_limit() -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_system_call;
+
+    #[test]
+    fn system_call_failures_keep_the_operation_specific_diagnostic() {
+        for message in [
+            "cannot bound compiler allocator arenas",
+            "cannot inspect compiler memory limit",
+            "cannot enforce compiler memory limit",
+        ] {
+            assert_eq!(checked_system_call(true, message), Ok(()));
+            assert_eq!(checked_system_call(false, message), Err(message.to_owned()));
+        }
+    }
 }

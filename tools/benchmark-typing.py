@@ -105,7 +105,6 @@ root = options.output_directory.resolve()
 (root / "bifoil.toml").write_text('entry = "main.start"\n')
 source = root / "src/main.bfl"
 original = program_source(options.workload)
-nominal = options.workload == "nominals"
 edit_name, before, after = {
     "forward-vals": ("forward_val_edit", "x1023 = count + 1", "x1023 = count + 2"),
     "grouped-forward-vals": (
@@ -367,72 +366,42 @@ report = {
     "compiler_sha256": checksum(options.compiler),
     "runs": {},
 }
-if options.workload in [
-    "assignment-facts",
-    "path-joins",
-    "loop-breaks",
-    "continue-facts",
-    "continue-branches",
-]:
-    report["facts"] = 4000
-    report["branches"] = 1024 if options.workload == "continue-branches" else 128
-if options.workload == "generic-parameters":
-    report["generic_parameters"] = 512
-    report["fields"] = 512
-if options.workload == "function-parameters":
-    report["parameters"] = 2048
-    report["calls"] = 3
-if options.workload == "conditional-chains":
-    report["branches"] = 8192
-if options.workload == "forward-aliases":
-    report["aliases"] = 32768
-if options.workload == "calling-defaults":
-    report["fields"] = 2048
-    report["default_calls"] = 2048
-if options.workload == "named-constructors":
-    report["fields"] = 2048
-    report["constructor_calls"] = 16
-    report["named_arguments"] = 32768
-if options.workload == "method-bodies":
-    report["declared_methods"] = 512
-    report["parameters_per_method"] = 16
-    report["method_local_closures"] = 512
-if nominal or options.workload in ["fields", "mutable-fields"]:
-    report["fields"] = 768 if nominal else 32
-if options.workload == "compound-indexes":
-    report["compound_updates"] = 2048
-if options.workload == "text-computed-indexes":
-    report["lookup_guards"] = 1536
-if options.workload in ["indexes", "mutable-indexes", "computed-indexes"]:
-    report["lookup_guards"] = 2048
-if options.workload == "single-use-vals":
-    report["single_use_initializers"] = 1024
-if options.workload == "projected-inputs":
-    report["projected_call_sites"] = 1024
-if options.workload == "generic-name-scopes":
-    report["visible_aliases"] = 1901
-    report["local_aliases"] = 1900
-    report["branch_guards"] = 3800
-if options.workload == "normalization-scopes":
-    report["alias_count"] = 1901
-    report["branch_guards"] = 3800
-if options.workload == "aliases":
-    report["alias_levels"] = 28
-if options.workload == "alias-scopes":
-    report["alias_count"] = 2049
-if options.workload in ["capture-initializers", "capture-readers"]:
-    report["initialized_captures"] = 1900
-if options.workload == "callback-initializers":
-    report["initialized_callbacks"] = 4090
-if options.workload == "shared-writes":
-    report["updated_globals"] = 4090
-if options.workload == "shared-calls":
-    report["shared_initializers"] = 1900
-    report["helper_chain"] = 1900
-if options.workload == "shared-dependencies":
-    report["shared_seeds"] = 128
-    report["shared_consumers"] = 1500
-    report["dependency_fanout"] = 128
+# Fixed workload dimensions are data, independent of compilation and resource observations.
+dimensions = {
+    "assignment-facts": {"facts": 4000, "branches": 128},
+    "path-joins": {"facts": 4000, "branches": 128},
+    "loop-breaks": {"facts": 4000, "branches": 128},
+    "continue-facts": {"facts": 4000, "branches": 128},
+    "continue-branches": {"facts": 4000, "branches": 1024},
+    "generic-parameters": {"generic_parameters": 512, "fields": 512},
+    "function-parameters": {"parameters": 2048, "calls": 3},
+    "conditional-chains": {"branches": 8192},
+    "forward-aliases": {"aliases": 32768},
+    "calling-defaults": {"fields": 2048, "default_calls": 2048},
+    "named-constructors": {"fields": 2048, "constructor_calls": 16, "named_arguments": 32768},
+    "method-bodies": {"declared_methods": 512, "parameters_per_method": 16, "method_local_closures": 512},
+    "nominals": {"fields": 768},
+    "fields": {"fields": 32},
+    "mutable-fields": {"fields": 32},
+    "compound-indexes": {"compound_updates": 2048},
+    "text-computed-indexes": {"lookup_guards": 1536},
+    "indexes": {"lookup_guards": 2048},
+    "mutable-indexes": {"lookup_guards": 2048},
+    "computed-indexes": {"lookup_guards": 2048},
+    "single-use-vals": {"single_use_initializers": 1024},
+    "projected-inputs": {"projected_call_sites": 1024},
+    "generic-name-scopes": {"visible_aliases": 1901, "local_aliases": 1900, "branch_guards": 3800},
+    "normalization-scopes": {"alias_count": 1901, "branch_guards": 3800},
+    "aliases": {"alias_levels": 28},
+    "alias-scopes": {"alias_count": 2049},
+    "capture-initializers": {"initialized_captures": 1900},
+    "capture-readers": {"initialized_captures": 1900},
+    "callback-initializers": {"initialized_callbacks": 4090},
+    "shared-writes": {"updated_globals": 4090},
+    "shared-calls": {"shared_initializers": 1900, "helper_chain": 1900},
+    "shared-dependencies": {"shared_seeds": 128, "shared_consumers": 1500, "dependency_fanout": 128},
+}
+report.update(dimensions.get(options.workload, {}))
 checksums = {}
 for name in ["populate", "unchanged", edit_name]:
     if name == edit_name:
@@ -446,12 +415,8 @@ for name in ["populate", "unchanged", edit_name]:
     result["program_sha256"] = checksums[name]
     if options.keep_original and name == "populate":
         shutil.copyfile(output, root / "original.startup.txt")
-report["unchanged_output"] = "populate" in checksums and checksums.get(
-    "populate"
-) == checksums.get("unchanged")
-report["edited_output_changed"] = edit_name in checksums and checksums[
-    edit_name
-] != checksums.get("populate")
+report["unchanged_output"] = "populate" in checksums and checksums.get("populate") == checksums.get("unchanged")
+report["edited_output_changed"] = edit_name in checksums and checksums[edit_name] != checksums.get("populate")
 (root / "measurement.json").write_text(json.dumps(report, indent=2) + "\n")
 print(json.dumps(report, indent=2))
 for name, result in report["runs"].items():

@@ -52,3 +52,34 @@ impl fmt::Display for ParseError {
         output.write_str(&self.message)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ParseError;
+
+    #[test]
+    fn missing_locations_preserve_the_file_boundary_until_a_physical_line_is_known() {
+        let error = ParseError::from("missing operand").at(0).offset(8);
+        assert_eq!(error.to_string(), "missing operand");
+        assert_eq!(error.render("story.bfl"), "story.bfl: missing operand");
+        let error = error.at(2).at(40).offset(3);
+        assert_eq!(error.to_string(), "5: missing operand");
+        assert_eq!(error.render("story.bfl"), "story.bfl:5: missing operand");
+    }
+
+    #[test]
+    fn formatting_propagates_a_writer_failure() {
+        struct FailedWriter;
+        impl std::fmt::Write for FailedWriter {
+            fn write_str(&mut self, _: &str) -> std::fmt::Result {
+                Err(std::fmt::Error)
+            }
+        }
+        for error in [
+            ParseError::from("message"),
+            ParseError::from(String::from("message")).at(3),
+        ] {
+            assert!(std::fmt::write(&mut FailedWriter, format_args!("{error}")).is_err());
+        }
+    }
+}

@@ -19,8 +19,9 @@ class CapacityPathControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "C drive"):
             benchmark.node_path(Path("/tmp/source"), Path("node.exe"))
         for index in [-1, 2]:
+            workload = NarrativeCapacity(2, 1)
             with self.assertRaisesRegex(ValueError, "room index"):
-                NarrativeCapacity(2, 1).room_source(index)
+                workload.room_source(index)
 
 
 class CapacityFailureControls(NativeCompilerTest):

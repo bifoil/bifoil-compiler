@@ -85,9 +85,9 @@ pub(super) fn constant_comparison(operator: &str, left: &Expr, right: &Expr) -> 
     match operator {
         "==" | "===" => Some(equal),
         "!=" | "!==" => Some(!equal),
-        "<" => order.map(|value| value.is_lt()),
+        "<" => order.map(Ordering::is_lt),
         "<=" => order.map(|value| !value.is_gt()),
-        ">" => order.map(|value| value.is_gt()),
+        ">" => order.map(Ordering::is_gt),
         ">=" => order.map(|value| !value.is_lt()),
         _ => None,
     }
@@ -99,53 +99,7 @@ pub(super) fn constant_number(expr: &Expr) -> Result<Option<(Type, f64)>, String
         Expr::Float(n) => Some((Type::Float, *n)),
         Expr::Group(e) => return constant_number(e),
         Expr::Unary(op, e, ..) if op == "-" => constant_number(e)?.map(|(ty, n)| (ty, -n)),
-        Expr::Binary(op, a, b, ..) => {
-            let left = constant_number(a)?;
-            if matches!(op.as_str(), "%+" | "%-")
-                && left.as_ref().is_some_and(|(_, base)| !(0.0..=100.0).contains(base))
-            {
-                return Err("constant fairmath base must be in 0..100".into());
-            }
-            let (Some((ta, a)), Some((tb, b))) = (left, constant_number(b)?) else {
-                return Ok(None);
-            };
-            let ty = if ta == Type::Int && tb == Type::Int {
-                Type::Int
-            } else {
-                Type::Float
-            };
-            let n = match op.as_str() {
-                "+" => a + b,
-                "-" => a - b,
-                "*" => a * b,
-                "/" => {
-                    if b == 0.0 {
-                        return Err("constant division by zero".into());
-                    }
-                    if ty == Type::Int { (a / b).trunc() } else { a / b }
-                }
-                "%" => {
-                    if b == 0.0 {
-                        return Err("constant division by zero".into());
-                    }
-                    a % b
-                }
-                "%+" | "%-" => {
-                    if !(0.0..=100.0).contains(&a) {
-                        return Err("constant fairmath base must be in 0..100".into());
-                    }
-                    let change = if op == "%-" { -b } else { b };
-                    let result = if change > 0.0 {
-                        (a + change * ((100.0 - a) / 100.0)).floor().min(99.0)
-                    } else {
-                        (a - (0.0 - change) * (a / 100.0)).ceil().max(1.0)
-                    };
-                    return Ok(Some((Type::Int, result)));
-                }
-                _ => return Ok(None),
-            };
-            Some((ty, n))
-        }
+        Expr::Binary(op, a, b, ..) => constant_binary(op, a, b)?,
         _ => None,
     };
     if let Some((ty, n)) = &result {
@@ -160,6 +114,53 @@ pub(super) fn constant_number(expr: &Expr) -> Result<Option<(Type, f64)>, String
         }
     }
     Ok(result)
+}
+
+/// Compute binary constants in source order; operand and final-result checks remain separate.
+fn constant_binary(op: &str, a: &Expr, b: &Expr) -> Result<Option<(Type, f64)>, String> {
+    let left = constant_number(a)?;
+    if matches!(op, "%+" | "%-") && left.as_ref().is_some_and(|(_, base)| !(0.0..=100.0).contains(base)) {
+        return Err("constant fairmath base must be in 0..100".into());
+    }
+    let (Some((ta, a)), Some((tb, b))) = (left, constant_number(b)?) else {
+        return Ok(None);
+    };
+    let ty = if ta == Type::Int && tb == Type::Int {
+        Type::Int
+    } else {
+        Type::Float
+    };
+    let n = match op {
+        "+" => a + b,
+        "-" => a - b,
+        "*" => a * b,
+        "/" => {
+            if b == 0.0 {
+                return Err("constant division by zero".into());
+            }
+            if ty == Type::Int { (a / b).trunc() } else { a / b }
+        }
+        "%" => {
+            if b == 0.0 {
+                return Err("constant division by zero".into());
+            }
+            a % b
+        }
+        "%+" | "%-" => {
+            if !(0.0..=100.0).contains(&a) {
+                return Err("constant fairmath base must be in 0..100".into());
+            }
+            let change = if op == "%-" { -b } else { b };
+            let result = if change > 0.0 {
+                (a + change * ((100.0 - a) / 100.0)).floor().min(99.0)
+            } else {
+                (a - (0.0 - change) * (a / 100.0)).ceil().max(1.0)
+            };
+            return Ok(Some((Type::Int, result)));
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some((ty, n)))
 }
 
 fn ungroup(mut expression: &Expr) -> &Expr {

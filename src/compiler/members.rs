@@ -39,102 +39,89 @@ pub(super) fn builtin_heap_effect(id: &str) -> BuiltinHeapEffect {
     }
 }
 
+type BuiltinShape = (Vec<(&'static str, Type)>, Type);
+
 pub(super) fn builtin_signature(receiver: &Type, name: &str) -> Option<Signature> {
     let view = crate::generics::member_view(receiver);
-    let receiver = &view;
-    let primitive = |params: Vec<(&str, Type)>, result: Type| {
-        Arc::new(SignatureData {
-            generics: vec![],
-            id: format!("$builtin.{name}"),
-            params: params
-                .into_iter()
-                .map(|(n, ty)| Param {
-                    name: n.into(),
-                    ty,
-                    mutable: false,
-                    default: false,
-                    vararg: false,
-                })
-                .collect(),
-            result,
-            suspend: false,
-            scene: false,
-        })
-    };
-    if name == "toString" {
-        return Some(primitive(vec![], Type::String));
-    }
-    if numeric(receiver) && name == "toInt" {
-        return Some(primitive(vec![], Type::Int));
-    }
-    if numeric(receiver) && name == "toFloat" {
-        return Some(primitive(vec![], Type::Float));
-    }
-    if *receiver == Type::String && name == "substring" {
-        return Some(primitive(
-            vec![("start", Type::Int), ("endExclusive", Type::Int)],
-            Type::String,
-        ));
-    }
-    if (*receiver == Type::String || receiver.collection().is_some()) && name == "isEmpty" {
-        return Some(primitive(vec![], Type::Boolean));
-    }
-    if let Some((family, args, mutable)) = receiver.collection() {
-        let membership = name == "contains" || (family == "Map" && name == "containsKey");
-        if membership && args[0].equatable() {
-            let parameter = if name == "containsKey" { "key" } else { "element" };
-            return Some(primitive(vec![(parameter, args[0].clone())], Type::Boolean));
+    let shape = match name {
+        "toString" => Some((vec![], Type::String)),
+        "toInt" if numeric(&view) => Some((vec![], Type::Int)),
+        "toFloat" if numeric(&view) => Some((vec![], Type::Float)),
+        "substring" if view == Type::String => {
+            Some((vec![("start", Type::Int), ("endExclusive", Type::Int)], Type::String))
         }
-        if [
-            "toList",
-            "toMutableList",
-            "toSet",
-            "toMutableSet",
-            "toMap",
-            "toMutableMap",
-        ]
-        .contains(&name)
-        {
-            let target = name.strip_prefix("to").unwrap();
-            if target.ends_with(family) {
-                return Some(primitive(vec![], Type::named(target, args.to_vec())));
-            }
-        }
-        if mutable {
-            if name == "clear" {
-                return Some(primitive(vec![], Type::Unit));
-            }
-            if name == "remove" && args[0].equatable() {
-                return Some(primitive(
-                    vec![(if family == "Map" { "key" } else { "element" }, args[0].clone())],
-                    if family == "Map" {
-                        args[1].projected_read().nullable()
-                    } else {
-                        Type::Boolean
-                    },
-                ));
-            }
-            if family != "Map" && name == "add" {
-                return Some(primitive(vec![("element", args[0].clone())], Type::Boolean));
-            }
-            if family == "List" && name == "insert" {
-                return Some(primitive(
-                    vec![("index", Type::Int), ("element", args[0].clone())],
-                    Type::Unit,
-                ));
-            }
-            if family == "List" && name == "removeAt" {
-                return Some(primitive(vec![("index", Type::Int)], args[0].projected_read()));
-            }
-            if family == "Map" && name == "put" {
-                return Some(primitive(
-                    vec![("key", args[0].clone()), ("value", args[1].clone())],
-                    args[1].projected_read().nullable(),
-                ));
-            }
+        "isEmpty" if view == Type::String || view.collection().is_some() => Some((vec![], Type::Boolean)),
+        _ => collection_builtin(&view, name),
+    }?;
+    Some(Arc::new(SignatureData {
+        generics: vec![],
+        id: format!("$builtin.{name}"),
+        params: shape
+            .0
+            .into_iter()
+            .map(|(name, ty)| Param {
+                name: name.into(),
+                ty,
+                mutable: false,
+                default: false,
+                vararg: false,
+            })
+            .collect(),
+        result: shape.1,
+        suspend: false,
+        scene: false,
+    }))
+}
+
+fn collection_builtin(receiver: &Type, name: &str) -> Option<BuiltinShape> {
+    let (family, args, mutable) = receiver.collection()?;
+    let membership = name == "contains" || (family == "Map" && name == "containsKey");
+    if membership && args[0].equatable() {
+        let parameter = if name == "containsKey" { "key" } else { "element" };
+        return Some((vec![(parameter, args[0].clone())], Type::Boolean));
+    }
+    if [
+        "toList",
+        "toMutableList",
+        "toSet",
+        "toMutableSet",
+        "toMap",
+        "toMutableMap",
+    ]
+    .contains(&name)
+    {
+        let target = name.strip_prefix("to").unwrap();
+        if target.ends_with(family) {
+            return Some((vec![], Type::named(target, args.to_vec())));
         }
     }
-    None
+    if mutable {
+        mutable_collection_builtin(family, args, name)
+    } else {
+        None
+    }
+}
+
+fn mutable_collection_builtin(family: &str, args: &[Type], name: &str) -> Option<BuiltinShape> {
+    match name {
+        "clear" => Some((vec![], Type::Unit)),
+        "remove" if args[0].equatable() => Some((
+            vec![(if family == "Map" { "key" } else { "element" }, args[0].clone())],
+            if family == "Map" {
+                args[1].projected_read().nullable()
+            } else {
+                Type::Boolean
+            },
+        )),
+        "add" if family != "Map" => Some((vec![("element", args[0].clone())], Type::Boolean)),
+        "insert" if family == "List" => Some((vec![("index", Type::Int), ("element", args[0].clone())], Type::Unit)),
+        "removeAt" if family == "List" => Some((vec![("index", Type::Int)], args[0].projected_read())),
+        "put" if family == "Map" => Some((
+            vec![("key", args[0].clone()), ("value", args[1].clone())],
+            args[1].projected_read().nullable(),
+        )),
+        _ => None,
+    }
 }
 
 /// A field may itself contain a function; only methods have a resolved target.
