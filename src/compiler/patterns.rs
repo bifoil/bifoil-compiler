@@ -134,6 +134,16 @@ pub(super) fn when_exhaustive(
     Ok(whole || subject.is_some_and(|s| view == Some(Type::Boolean) && yes && no && (!s.permits_null() || null)))
 }
 
+pub(super) fn covers_null(case: &WhenCase) -> bool {
+    case.guard
+        .as_ref()
+        .is_none_or(|guard| super::constants::constant_boolean(guard) == Some(true))
+        && case
+            .patterns
+            .iter()
+            .any(|pattern| matches!(value_expression(pattern), Some(Expr::Null)))
+}
+
 pub(super) fn pattern_bindings(pattern: &Pattern) -> Result<Vec<(String, String, Type)>, String> {
     let Pattern::Type {
         ty,
@@ -378,6 +388,32 @@ impl Compiler {
         Ok(Some(context.emit(Op::JumpFalse { target: 0 }, case.line)))
     }
 
+    fn enter_when_branch(
+        &mut self,
+        case: &WhenCase,
+        base: &super::ScopeStack,
+        matches: &[super::ScopeStack],
+        matched: &[usize],
+        context: &mut FunctionContext,
+    ) -> Option<usize> {
+        context.scopes = merge_env(base, matches);
+        context.is_reachable = !matches.is_empty();
+        let next = if case.fallback {
+            None
+        } else {
+            Some(context.emit(Op::Jump { target: 0 }, case.line))
+        };
+        let start = context.instructions.len();
+        for jump in matched {
+            context.patch(*jump, start)
+        }
+        if case.fallback {
+            context.emit(Op::Enter, case.line);
+        }
+        context.scopes.push(Arc::default());
+        next
+    }
+
     pub(super) fn when_statement(
         &mut self,
         subject: &Option<Expr>,
@@ -476,21 +512,7 @@ impl Compiler {
             if !case.fallback && context.is_reachable {
                 unmatched.push(context.scopes.clone());
             }
-            context.scopes = merge_env(&base, &matches);
-            context.is_reachable = !matches.is_empty();
-            let next = if case.fallback {
-                None
-            } else {
-                Some(context.emit(Op::Jump { target: 0 }, case.line))
-            };
-            let start = context.instructions.len();
-            for jump in matched {
-                context.patch(jump, start)
-            }
-            if case.fallback {
-                context.emit(Op::Enter, case.line);
-            }
-            context.scopes.push(Arc::default());
+            let next = self.enter_when_branch(case, &base, &matches, &matched, context);
             for (name, ty) in bindings {
                 insert(
                     &mut context.scopes,
@@ -543,30 +565,17 @@ impl Compiler {
             if let Some(jump) = next {
                 context.patch(jump, context.instructions.len())
             }
-            if case
-                .guard
-                .as_ref()
-                .is_none_or(|guard| super::constants::constant_boolean(guard) == Some(true))
-                && case
-                    .patterns
-                    .iter()
-                    .any(|p| matches!(value_expression(p), Some(Expr::Null)))
-            {
-                null_covered = true
-            }
+            null_covered |= covers_null(case);
         }
         let exhaustive = when_exhaustive(subject_type.as_ref(), cases, &base)?;
         if !exhaustive {
-            if let Some(mut unmatched) = remaining {
-                if !stable {
-                    super::invalidate_narrowing(&mut unmatched);
-                }
-                if null_covered {
-                    let original = subject_source.as_ref().and_then(|source| source.original(stable));
-                    super::flow::narrow_when_remainder(binding.as_deref(), original, &mut unmatched);
-                }
-                paths.add(&base, unmatched);
+            super::flow::WhenRemainder {
+                binding: binding.as_deref(),
+                subject: subject_source.as_ref(),
+                stable,
+                null_covered,
             }
+            .add(&base, remaining, &mut paths);
         } else if !cases.iter().any(|case| case.fallback) {
             // Typed coverage makes this path impossible. A terminator keeps the
             // lowered CFG sound for analyses that do not evaluate case predicates.

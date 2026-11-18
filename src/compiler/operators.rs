@@ -60,10 +60,11 @@ fn resolved_binary_type(op: &str, a: &Type, b: &Type) -> Result<Type, String> {
     if op == "step" && matches!(a,Type::Named{name,..} if name=="IntRange"||name=="IntProgression") && *b == Type::Int {
         return Ok(Type::named("IntProgression", vec![]));
     }
-    if (op == "in" || op == "!in") && !b.permits_null() {
-        if let Some(result) = membership_type(a, b) {
-            return result;
-        }
+    if (op == "in" || op == "!in")
+        && !b.permits_null()
+        && let Some(result) = membership_type(a, b)
+    {
+        return result;
     }
     scalar_binary_type(op, a, b)
 }

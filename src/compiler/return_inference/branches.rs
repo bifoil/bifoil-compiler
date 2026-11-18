@@ -85,42 +85,44 @@ fn matching_paths(
     analysis: &mut Inference,
 ) -> Result<(Vec<ScopeStack>, bool), String> {
     let mut matches = Vec::new();
-    if !case.fallback {
-        for pattern in &case.patterns {
-            if let Pattern::Value(value) | Pattern::Membership { value, .. } = pattern {
-                if reaches {
-                    reaches = expression_returns(value, scope, analysis)?;
-                }
-                *stable &= pure_expression(value);
+    if case.fallback {
+        if reaches {
+            matches.push(scope.clone());
+        }
+        return Ok((matches, reaches));
+    }
+    for pattern in &case.patterns {
+        if let Pattern::Value(value) | Pattern::Membership { value, .. } = pattern {
+            if reaches {
+                reaches = expression_returns(value, scope, analysis)?;
             }
-            let known = match pattern {
-                Pattern::Value(value) => {
-                    if let Some(subject) = subject {
-                        constant_comparison("==", subject, value)
-                    } else {
-                        constant_boolean(value)
-                    }
+            *stable &= pure_expression(value);
+        }
+        let known = match pattern {
+            Pattern::Value(value) => {
+                if let Some(subject) = subject {
+                    constant_comparison("==", subject, value)
+                } else {
+                    constant_boolean(value)
                 }
-                _ => None,
-            };
-            if reaches && known != Some(false) {
-                let mut success = scope.clone();
-                if let Pattern::Value(value) = pattern
-                    && subject.is_none()
-                {
-                    narrow_condition(value, &mut success, true);
-                }
-                matches.push(success);
             }
-            reaches &= known != Some(true);
+            _ => None,
+        };
+        if reaches && known != Some(false) {
+            let mut success = scope.clone();
             if let Pattern::Value(value) = pattern
                 && subject.is_none()
             {
-                narrow_condition(value, scope, false);
+                narrow_condition(value, &mut success, true);
             }
+            matches.push(success);
         }
-    } else if reaches {
-        matches.push(scope.clone());
+        reaches &= known != Some(true);
+        if let Pattern::Value(value) = pattern
+            && subject.is_none()
+        {
+            narrow_condition(value, scope, false);
+        }
     }
     Ok((matches, reaches))
 }
@@ -149,6 +151,23 @@ fn guard_returns(
     reaches &= known != Some(false);
     narrow_condition(guard, branch, true);
     Ok(reaches)
+}
+
+fn record_when_body(
+    body: &[Statement],
+    branch: &mut ScopeStack,
+    analysis: &mut Inference,
+    values: Option<&mut ValueResults<'_>>,
+) -> Result<bool, String> {
+    if let Some(values) = values {
+        values.record(body, branch, analysis)?;
+        return Ok(false);
+    }
+    if block(body, branch, analysis)? {
+        branch.pop();
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub(super) fn when_statement(
@@ -212,39 +231,21 @@ pub(super) fn when_statement(
                 analysis,
                 &mut stable,
             )?;
-            if body_reaches {
-                if let Some(values) = values.as_deref_mut() {
-                    values.record(&case.body, &branch, analysis)?;
-                } else if block(&case.body, &mut branch, analysis)? {
-                    branch.pop();
-                    paths.add(&base, branch);
-                }
+            if body_reaches && record_when_body(&case.body, &mut branch, analysis, values.as_deref_mut())? {
+                paths.add(&base, branch);
             }
         }
         remaining = (!unmatched.is_empty()).then(|| merge_env(&base, &unmatched));
-        if case
-            .guard
-            .as_ref()
-            .is_none_or(|guard| constant_boolean(guard) == Some(true))
-            && case
-                .patterns
-                .iter()
-                .any(|pattern| matches!(super::super::patterns::value_expression(pattern), Some(Expr::Null)))
-        {
-            null_covered = true;
-        }
+        null_covered |= super::super::patterns::covers_null(case);
     }
-    if !when_exhaustive(subject_type.as_ref(), cases, &base)?
-        && let Some(mut unmatched) = remaining
-    {
-        if !stable {
-            invalidate_narrowing(&mut unmatched);
+    if !when_exhaustive(subject_type.as_ref(), cases, &base)? {
+        super::super::flow::WhenRemainder {
+            binding: binding.as_deref(),
+            subject: subject_source.as_ref(),
+            stable,
+            null_covered,
         }
-        if null_covered {
-            let original = subject_source.as_ref().and_then(|source| source.original(stable));
-            super::super::flow::narrow_when_remainder(binding.as_deref(), original, &mut unmatched);
-        }
-        paths.add(&base, unmatched);
+        .add(&base, remaining, &mut paths);
     }
     let reaches = !paths.is_empty();
     *env = paths.finish(&base);

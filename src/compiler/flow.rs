@@ -361,3 +361,27 @@ pub(super) fn narrow_present(expression: &Expr, env: &mut ScopeStack) {
 
 #[cfg(test)]
 mod tests;
+
+/// Facts that remain after all successful when branches have been excluded.
+/// Lowering and return inference share the same mutation and null-coverage rules.
+pub(super) struct WhenRemainder<'a> {
+    pub(super) binding: Option<&'a str>,
+    pub(super) subject: Option<&'a SubjectSource>,
+    pub(super) stable: bool,
+    pub(super) null_covered: bool,
+}
+
+impl WhenRemainder<'_> {
+    pub(super) fn add(self, base: &ScopeStack, remaining: Option<ScopeStack>, paths: &mut FlowJoin) {
+        if let Some(mut unmatched) = remaining {
+            if !self.stable {
+                super::invalidate_narrowing(&mut unmatched);
+            }
+            if self.null_covered {
+                let original = self.subject.and_then(|source| source.original(self.stable));
+                narrow_when_remainder(self.binding, original, &mut unmatched);
+            }
+            paths.add(base, unmatched);
+        }
+    }
+}
