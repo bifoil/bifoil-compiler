@@ -77,13 +77,14 @@ fn overlap(query: &mut OverlapQuery, left: &Type, right: &Type, depth: usize) ->
     }
     // Any shared null path has already been handled. Member views describe
     // the remaining non-null portion even when a parameter's bound is nullable.
+    // The view resolves the outer parameter, including missing or cyclic bounds.
     if matches!(left, Type::Parameter { .. }) {
         let view = crate::generics::member_view(left);
-        return view == *left || query.check(Proof::ValueOverlap, &view, right, depth + 1);
+        return query.check(Proof::ValueOverlap, &view, right, depth + 1);
     }
     if matches!(right, Type::Parameter { .. }) {
         let view = crate::generics::member_view(right);
-        return view == *right || query.check(Proof::ValueOverlap, left, &view, depth + 1);
+        return query.check(Proof::ValueOverlap, left, &view, depth + 1);
     }
     match (left, right) {
         (Type::Named { name: a, args: aa }, Type::Named { name: b, args: ba }) => {
