@@ -286,6 +286,11 @@ jobs:
               print(f"{'COVERED' if passed else 'LOW COVERAGE'} {name}: {100 * hit / total:.2f}% ({hit}/{total}); required >=80%")
               if not passed:
                   below_minimum.append(name)
+          condition_hits = sum(hit for name in sources for hit, _ in branch_coverage.get(name, {}).values())
+          condition_total = sum(total for name in sources for _, total in branch_coverage.get(name, {}).values())
+          print(f"OVERALL CONDITIONS {condition_hits}/{condition_total}; required 100%")
+          if condition_hits != condition_total:
+              raise SystemExit("Overall condition coverage must be 100%")
           if missing or below_minimum:
               raise SystemExit(1)
           PY

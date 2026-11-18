@@ -79,6 +79,16 @@ class PerFileCoverage(unittest.TestCase):
         self.report("sonar.javascript.lcov.reportPaths", self.lcov(name, [1, 0], [1, "-", 1]), "coverage.lcov")
         self.assertIn("LOW COVERAGE", self.check(1))
 
+    def test_high_combined_coverage_cannot_hide_a_missing_overall_condition(self):
+        name = self.source()
+        self.report("sonar.javascript.lcov.reportPaths", self.lcov(name, [1] * 8, [1, 1, 1, 0]), "coverage.lcov")
+        output = self.check(1)
+        self.assertIn("COVERED " + name, output)
+        self.assertIn("OVERALL CONDITIONS 3/4", output)
+        self.assertIn("Overall condition coverage must be 100%", output)
+        self.report("sonar.javascript.lcov.reportPaths", self.lcov(name, [1] * 8, [1, 1, 1, 1]), "coverage.lcov")
+        self.assertIn("OVERALL CONDITIONS 4/4", self.check())
+
     def test_missing_or_unexecuted_sources_are_failures(self):
         name = self.source()
         self.assertIn("UNMEASURED " + name, self.check(1))
