@@ -152,7 +152,7 @@ impl Compiler {
                         value,
                     } => self.write(target, operator, value, context, line)?,
                     StatementKind::Expression(e) => {
-                        if self.expand_initializer(stmt, context)? {
+                        if self.expand_initializer(e, context)? {
                             return Ok(());
                         }
                         let ty = self.expression(e, context, line)?;

@@ -234,10 +234,9 @@ pub(super) fn discover(
                  compact: expand,
              }| {
                 let name = function.name.as_str();
+                // An entry is created only when inventory appends an actual call.
                 let calls = uses.get(name)?;
-                if calls.is_empty()
-                    || (!protected.is_empty() && calls.iter().any(|site| site.loop_condition))
-                    || referenced.contains(name)
+                if (!protected.is_empty() && calls.iter().any(|site| site.loop_condition)) || referenced.contains(name)
                 {
                     return None;
                 }
@@ -285,14 +284,11 @@ type Arguments = [(Option<String>, Expr)];
 /// A discarded plain-name call may have grouping around the call or its callee.
 /// Statement lowering avoids adding a discarded Unit value. Expression lowering
 /// uses the same plain-call shape and supplies that value to its consumer.
-fn compact_call(statement: &Statement) -> Option<(&str, &Arguments)> {
-    let StatementKind::Expression(value) = &statement.kind else {
-        return None;
-    };
+fn compact_call(value: &Expr) -> Option<&str> {
     let Expr::Call(callee, arguments, ..) = super::overloads::ungroup(value) else {
         return None;
     };
-    Some((plain_call_name(callee, arguments)?, arguments))
+    plain_call_name(callee, arguments)
 }
 
 /// Shared by source inventory and both compact lowering paths. These calls
@@ -340,17 +336,10 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn expand_initializer(
-        &mut self,
-        statement: &Statement,
-        context: &mut FunctionContext,
-    ) -> Result<bool, String> {
-        let Some((name, arguments)) = compact_call(statement) else {
+    pub(super) fn expand_initializer(&mut self, value: &Expr, context: &mut FunctionContext) -> Result<bool, String> {
+        let Some(name) = compact_call(value) else {
             return Ok(false);
         };
-        if !arguments.is_empty() {
-            return Ok(false);
-        }
         let Some(signature) = lookup(&context.scopes, name).and_then(|binding| binding.signature()) else {
             return Ok(false);
         };
@@ -391,3 +380,6 @@ impl Compiler {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+mod tests;
