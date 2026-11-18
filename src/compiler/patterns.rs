@@ -298,6 +298,9 @@ impl Compiler {
     ) -> Result<(Vec<super::ScopeStack>, Vec<usize>), String> {
         let mut matches = vec![];
         let mut matched = vec![];
+        if case.fallback {
+            return Ok((matches, matched));
+        }
         for pattern in &case.patterns {
             self.emit_when_test(pattern, test, context, stable)?;
             // Each successful alternative skips the remaining tests.
@@ -500,11 +503,7 @@ impl Compiler {
                 temporary: &temporary,
                 line: case.line,
             };
-            let (mut matches, matched) = if case.fallback {
-                (vec![], vec![])
-            } else {
-                self.when_alternatives(case, &test, &bindings, context, &mut stable)?
-            };
+            let (mut matches, matched) = self.when_alternatives(case, &test, &bindings, context, &mut stable)?;
             if case.fallback && context.is_reachable {
                 matches.push(context.scopes.clone());
             }
