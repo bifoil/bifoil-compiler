@@ -139,3 +139,16 @@ fn transfer_calls_end_the_captured_write_path_but_returning_calls_continue_it() 
         }
     }
 }
+
+#[test]
+fn excessive_control_flow_declines_the_optional_proof_without_publishing_writes() {
+    for edges in [MAX_FLOW_STEPS, MAX_FLOW_STEPS + 1] {
+        let code = instructions(
+            (0..edges)
+                .map(|index| Op::Jump { target: index + 1 })
+                .chain(std::iter::once(Op::Return))
+                .collect(),
+        );
+        assert!(analyze(&code, vec![target()], Instant::now()).unwrap().is_empty());
+    }
+}

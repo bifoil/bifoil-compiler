@@ -214,6 +214,9 @@ fn present(ty: Option<&Type>) -> Option<bool> {
     }
 }
 
+#[cfg(test)]
+mod tests;
+
 fn lazy(
     execute: Option<bool>,
     env: &mut ScopeStack,
