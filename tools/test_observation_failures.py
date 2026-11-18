@@ -1,6 +1,7 @@
 """Real benchmark runs must reject corrupted reuse, publication, and output observations."""
 
 import shutil
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,7 +19,7 @@ class ObservationFailureTests(NativeCompilerTest):
         """Change one observation after its real compiler process finishes successfully."""
         original = process_measurement.measure
         calls = 0
-        project = self.root / (script.removesuffix(".py") + "-" + str(phase))
+        project = Path(tempfile.mkdtemp(prefix=script.removesuffix(".py") + "-", dir=self.root)) / "project"
 
         def observe(command):
             nonlocal calls
@@ -116,3 +117,43 @@ class ObservationFailureTests(NativeCompilerTest):
                 self.assertIn("must be empty", message)
                 self.assertEqual(retained.read_text(), "original operator-owned file")
                 self.assertFalse((project / "measurement.json").exists())
+
+
+    def test_module_publication_rejections_preserve_the_unpublished_source(self):
+        for script, flags in [
+            ("benchmark-modules.py", ["--scenes", 1]),
+            ("benchmark-narrative.py", ["--scenes", 1, "--lines", 1]),
+        ]:
+            for field, value in [("status", 1), ("compiler_peak_rss_bytes", 250_000_000)]:
+                def reject(_command, result, field=field, value=value):
+                    result[field] = value
+                    result["stderr"] = "original publication fault"
+                with self.subTest(script=script, field=field):
+                    project = self.corrupt_phase(script, flags, 4, reject, "stats: original publication fault")
+                    self.assertTrue((project / "src/stats.bfl").exists())
+                    self.assertIn("stats", self.read_report(project)["publication"])
+
+    def test_package_cache_and_unchanged_deadlines_reject_the_exact_limit(self):
+        def exceed_deadline(_command, result):
+            result["wall_seconds"] = 10
+        for phase, message in [(9, "package cache population exceeded"), (10, "unchanged package exceeded")]:
+            with self.subTest(phase=phase):
+                project = self.corrupt_phase("benchmark-modules.py", ["--scenes", 1], phase, exceed_deadline, message)
+                self.assertTrue((project / "measurement.json").exists())
+
+    def test_code_measurements_reject_ambiguous_edits_and_changed_source_free_bytes(self):
+        flags = ["--modules", 1, "--routines", 2, "--additions", 1]
+        def ambiguous_source(command, _result):
+            project = Path(command[2])
+            source = project / "src/code/m00.bfl"
+            source.write_text(source.read_text().replace("= value + 1", "= value + 7"))
+        def missed_edit(command, _result):
+            output = Path(command[command.index("--out") + 1])
+            output.write_bytes((output.parent / "original/startup.txt").read_bytes())
+        for phase, corrupt, message in [
+            (2, ambiguous_source, "one editable routine"),
+            (3, missed_edit, "routine edit did not change"),
+            (7, append_output, "source-free linking changed"),
+        ]:
+            with self.subTest(phase=phase):
+                self.corrupt_phase("benchmark-code.py", flags, phase, corrupt, message)
