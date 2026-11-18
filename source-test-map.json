@@ -10,10 +10,10 @@
   },
   "command_contracts": {
     "tools/collect-coverage.sh": {
-      "sha256": "85746847417b8a81a00cbc898a6640b5a482b94419ced80c085277110c4a4750",
+      "sha256": "73adf5728a962eb2f15f15c543f7e6613d9ea2c83af41e5f730f5fa836869726",
       "test": "tools/test_coverage_collector.py",
       "case": "test_shell_collection_promotes_only_complete_observations",
-      "reason": "The test executes an exact copy of this shell source in owned temporary storage, substitutes external command boundaries, and verifies publication, failure, and staging cleanup."
+      "reason": "The test executes an exact copy of this shell source in owned temporary storage, substitutes external command boundaries, and verifies publication, failure, staging cleanup, and explicit compiler/runtime/Node dependencies for Python execution."
     }
   }
 }

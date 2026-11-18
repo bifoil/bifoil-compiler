@@ -35,7 +35,10 @@ command = pathlib.Path(sys.argv[0]).name
 arguments = sys.argv[1:]
 with open(os.environ["BIFOIL_COLLECTOR_TRACE"], "a", encoding="utf-8") as trace:
     trace.write(json.dumps({"command": command, "args": arguments,
-        "bootstrap": os.environ.get("RUSTC_BOOTSTRAP"), "profile": os.environ.get("LLVM_PROFILE_FILE")}) + "\n")
+        "bootstrap": os.environ.get("RUSTC_BOOTSTRAP"), "profile": os.environ.get("LLVM_PROFILE_FILE"),
+        "test_compiler": os.environ.get("BIFOIL_TEST_COMPILER"),
+        "test_runtime": os.environ.get("BIFOIL_TEST_RUNTIME"),
+        "test_node": os.environ.get("BIFOIL_TEST_NODE")}) + "\n")
 phase = os.environ.get("BIFOIL_COLLECTOR_FAIL")
 if (phase == "native" and "--branch" in arguments or
         phase == "conformance" and command == "python3" or
@@ -82,6 +85,10 @@ if command == "uv" and "xml" in arguments:
                     self.assertTrue(conformance["profile"].endswith("conformance-%4m.profraw"))
                     self.assertIn(str(language / "conformance/original.json"), conformance["args"])
                     self.assertNotIn(str(language / "conformance/steering.json"), conformance["args"])
+                    python_tests = next(call for call in calls if call["command"] == "uv" and "unittest" in call["args"])
+                    self.assertEqual(python_tests["test_compiler"], str(root / "target/release/bifoilc"))
+                    self.assertEqual(python_tests["test_runtime"], str(runtime))
+                    self.assertEqual(python_tests["test_node"], str(commands / "node"))
 
     def test_shell_collection_requires_explicit_dependencies_before_touching_reports(self):
         for arguments in [[], ["one"], ["one", "two"], ["one", "two", "three", "four"]]:
