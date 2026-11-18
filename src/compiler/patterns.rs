@@ -38,6 +38,57 @@ fn constant_variant(value: &Expr, expected: &Type, env: &super::ScopeStack) -> R
     Ok(actual.subtype_of(&expected).then_some(binding.runtime))
 }
 
+fn nominal_when_exhaustive(
+    subject: &Type,
+    view: &Type,
+    cases: &[WhenCase],
+    env: &super::ScopeStack,
+) -> Result<bool, String> {
+    let Type::Named { name, args } = view else {
+        return Ok(false);
+    };
+    let Some(def) = crate::declarations::definition(name) else {
+        return Ok(false);
+    };
+    let covered = cases
+        .iter()
+        .filter(|context| {
+            context
+                .guard
+                .as_ref()
+                .is_none_or(|guard| super::constants::constant_boolean(guard) == Some(true))
+        })
+        .flat_map(|context| &context.patterns)
+        .collect::<Vec<_>>();
+    let mut constant_variants = BTreeSet::new();
+    for pattern in &covered {
+        if let Pattern::Value(value) = pattern
+            && let Some(id) = constant_variant(value, subject, env)?
+        {
+            constant_variants.insert(id);
+        }
+    }
+    let all = def.variants.iter().all(|variant| {
+        let possible = if def.kind == "enum" {
+            view.clone()
+        } else {
+            Type::Named {
+                name: variant.clone(),
+                args: args.clone(),
+            }
+        };
+        constant_variants.contains(variant)
+            || covered
+                .iter()
+                .any(|pattern| matches!(pattern, Pattern::Type { ty, negate: false, .. } if possible.subtype_of(ty)))
+    });
+    let null = !subject.permits_null() || covered.iter().any(|p| matches!(value_expression(p), Some(Expr::Null)));
+    if !def.variants.is_empty() && all && null {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub(super) fn when_exhaustive(
     subject: Option<&Type>,
     cases: &[WhenCase],
@@ -47,46 +98,10 @@ pub(super) fn when_exhaustive(
         return Ok(true);
     }
     let view = subject.map(|ty| crate::generics::member_view(ty.present()));
-    if let Some(Type::Named { name, args }) = view.as_ref()
-        && let Some(def) = crate::declarations::definition(name)
+    if let Some(subject) = subject
+        && nominal_when_exhaustive(subject, view.as_ref().unwrap(), cases, env)?
     {
-        let covered = cases
-            .iter()
-            .filter(|context| {
-                context
-                    .guard
-                    .as_ref()
-                    .is_none_or(|guard| super::constants::constant_boolean(guard) == Some(true))
-            })
-            .flat_map(|context| &context.patterns)
-            .collect::<Vec<_>>();
-        let mut constant_variants = BTreeSet::new();
-        for pattern in &covered {
-            if let Pattern::Value(value) = pattern
-                && let Some(id) = constant_variant(value, subject.unwrap(), env)?
-            {
-                constant_variants.insert(id);
-            }
-        }
-        let all = def.variants.iter().all(|variant| {
-            let possible = if def.kind == "enum" {
-                view.as_ref().unwrap().clone()
-            } else {
-                Type::Named {
-                    name: variant.clone(),
-                    args: args.clone(),
-                }
-            };
-            constant_variants.contains(variant)
-                || covered.iter().any(
-                    |pattern| matches!(pattern, Pattern::Type { ty, negate: false, .. } if possible.subtype_of(ty)),
-                )
-        });
-        let null = subject.is_none_or(|s| !s.permits_null())
-            || covered.iter().any(|p| matches!(value_expression(p), Some(Expr::Null)));
-        if !def.variants.is_empty() && all && null {
-            return Ok(true);
-        }
+        return Ok(true);
     }
     let mut yes = false;
     let mut no = false;

@@ -13,6 +13,13 @@ from pathlib import Path
 from process_measurement import measure
 from workload_source import program_source
 
+SELECTOR_ORIGINAL = "selector = -1"
+FORWARD_ASSIGNMENT_EDIT = ("x1023 = count + 1", "x1023 = count + 2")
+COUNT_INITIALIZER_EDIT = ("initialize1023(count)", "initialize1023(count, increment = 2)")
+ITERATION_INITIALIZER_EDIT = ("initialize1023(iteration1023)", "initialize1023(iteration1023, increment = 2)")
+SELECTOR_EDIT = (SELECTOR_ORIGINAL, "selector = 127")
+RETURN_TOTAL_EDIT = ("return total", "return total + 1")
+
 
 def checksum(path):
     digest = hashlib.sha256()
@@ -106,118 +113,34 @@ root = options.output_directory.resolve()
 source = root / "src/main.bfl"
 original = program_source(options.workload)
 edit_name, before, after = {
-    "forward-vals": ("forward_val_edit", "x1023 = count + 1", "x1023 = count + 2"),
-    "grouped-forward-vals": (
-        "grouped_forward_val_edit",
-        "x1023 = count + 1",
-        "x1023 = count + 2",
-    ),
-    "unit-forward-vals": (
-        "unit_forward_val_edit",
-        "x1023 = count + 1",
-        "x1023 = count + 2",
-    ),
-    "frame-forward-vals": (
-        "frame_forward_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "mutable-forward-vals": (
-        "mutable_forward_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "repeated-forward-vals": (
-        "repeated_forward_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "loop-forward-vals": (
-        "loop_forward_val_edit",
-        "initialize1023(iteration1023)",
-        "initialize1023(iteration1023, increment = 2)",
-    ),
-    "range-forward-vals": (
-        "range_forward_val_edit",
-        "initialize1023(iteration1023)",
-        "initialize1023(iteration1023, increment = 2)",
-    ),
-    "stored-range-vals": (
-        "stored_range_val_edit",
-        "initialize1023(iteration1023)",
-        "initialize1023(iteration1023, increment = 2)",
-    ),
-    "immutable-list-vals": (
-        "immutable_list_val_edit",
-        "initialize1023(iteration1023)",
-        "initialize1023(iteration1023, increment = 2)",
-    ),
+    "forward-vals": ("forward_val_edit", *FORWARD_ASSIGNMENT_EDIT),
+    "grouped-forward-vals": ("grouped_forward_val_edit", *FORWARD_ASSIGNMENT_EDIT),
+    "unit-forward-vals": ("unit_forward_val_edit", *FORWARD_ASSIGNMENT_EDIT),
+    "frame-forward-vals": ("frame_forward_val_edit", *COUNT_INITIALIZER_EDIT),
+    "mutable-forward-vals": ("mutable_forward_val_edit", *COUNT_INITIALIZER_EDIT),
+    "repeated-forward-vals": ("repeated_forward_val_edit", *COUNT_INITIALIZER_EDIT),
+    "loop-forward-vals": ("loop_forward_val_edit", *ITERATION_INITIALIZER_EDIT),
+    "range-forward-vals": ("range_forward_val_edit", *ITERATION_INITIALIZER_EDIT),
+    "stored-range-vals": ("stored_range_val_edit", *ITERATION_INITIALIZER_EDIT),
+    "immutable-list-vals": ("immutable_list_val_edit", *ITERATION_INITIALIZER_EDIT),
     "exclusive-forward-vals": (
         "exclusive_forward_val_edit",
         "initialize1023(count, increment = 1)",
         "initialize1023(count, increment = 2)",
     ),
-    "loop-exit-vals": (
-        "loop_exit_val_edit",
-        "initialize1023(iteration1023)",
-        "initialize1023(iteration1023, increment = 2)",
-    ),
-    "prose-vals": (
-        "prose_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "operand-vals": (
-        "operand_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "compound-vals": (
-        "compound_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "indexed-vals": (
-        "indexed_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "assignment-vals": (
-        "assignment_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "default-vals": (
-        "default_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "expression-vals": (
-        "expression_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "returning-vals": (
-        "returning_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "generic-vals": (
-        "generic_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "structured-vals": (
-        "structured_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "parameter-vals": (
-        "parameter_val_edit",
-        "initialize1023(count)",
-        "initialize1023(count, increment = 2)",
-    ),
-    "scoped-vals": ("scoped_val_edit", "x1023 = count + 1", "x1023 = count + 2"),
+    "loop-exit-vals": ("loop_exit_val_edit", *ITERATION_INITIALIZER_EDIT),
+    "prose-vals": ("prose_val_edit", *COUNT_INITIALIZER_EDIT),
+    "operand-vals": ("operand_val_edit", *COUNT_INITIALIZER_EDIT),
+    "compound-vals": ("compound_val_edit", *COUNT_INITIALIZER_EDIT),
+    "indexed-vals": ("indexed_val_edit", *COUNT_INITIALIZER_EDIT),
+    "assignment-vals": ("assignment_val_edit", *COUNT_INITIALIZER_EDIT),
+    "default-vals": ("default_val_edit", *COUNT_INITIALIZER_EDIT),
+    "expression-vals": ("expression_val_edit", *COUNT_INITIALIZER_EDIT),
+    "returning-vals": ("returning_val_edit", *COUNT_INITIALIZER_EDIT),
+    "generic-vals": ("generic_val_edit", *COUNT_INITIALIZER_EDIT),
+    "structured-vals": ("structured_val_edit", *COUNT_INITIALIZER_EDIT),
+    "parameter-vals": ("parameter_val_edit", *COUNT_INITIALIZER_EDIT),
+    "scoped-vals": ("scoped_val_edit", *FORWARD_ASSIGNMENT_EDIT),
     "single-use-vals": (
         "single_use_val_edit",
         "x1023 = x1022 + 1",
@@ -244,12 +167,12 @@ edit_name, before, after = {
         "f16382() -> Int = 16382",
         "f16382() -> Int = 16383",
     ),
-    "continue-branches": ("selector_edit", "selector = -1", "selector = 1023"),
-    "continue-facts": ("selector_edit", "selector = -1", "selector = 127"),
-    "loop-breaks": ("selector_edit", "selector = -1", "selector = 127"),
-    "path-joins": ("selector_edit", "selector = -1", "selector = 127"),
-    "assignment-facts": ("selector_edit", "selector = -1", "selector = 127"),
-    "conditional-chains": ("selector_edit", "selector = -1", "selector = 8191"),
+    "continue-branches": ("selector_edit", SELECTOR_ORIGINAL, "selector = 1023"),
+    "continue-facts": ("selector_edit", *SELECTOR_EDIT),
+    "loop-breaks": ("selector_edit", *SELECTOR_EDIT),
+    "path-joins": ("selector_edit", *SELECTOR_EDIT),
+    "assignment-facts": ("selector_edit", *SELECTOR_EDIT),
+    "conditional-chains": ("selector_edit", SELECTOR_ORIGINAL, "selector = 8191"),
     "forward-aliases": ("alias_terminal_edit", "A32767 = Int", "A32767 = Float"),
     "calling-defaults": ("default_helper_edit", "delta: Int = 1", "delta: Int = 2"),
     "named-constructors": (
@@ -262,13 +185,13 @@ edit_name, before, after = {
     "branches": ("branch_edit", "return 1", "return 3"),
     "inference": ("inference_edit", "return input.length", "return input.length + 1"),
     "types": ("literal_edit", "val empty: Nested = []", "val empty: Nested = [[]]"),
-    "fields": ("field_proof_edit", "return total", "return total + 1"),
-    "mutable-fields": ("field_proof_edit", "return total", "return total + 1"),
-    "indexes": ("lookup_edit", "return total", "return total + 1"),
-    "mutable-indexes": ("lookup_edit", "return total", "return total + 1"),
-    "computed-indexes": ("lookup_edit", "return total", "return total + 1"),
-    "text-computed-indexes": ("lookup_edit", "return total", "return total + 1"),
-    "compound-indexes": ("compound_edit", "return total", "return total + 1"),
+    "fields": ("field_proof_edit", *RETURN_TOTAL_EDIT),
+    "mutable-fields": ("field_proof_edit", *RETURN_TOTAL_EDIT),
+    "indexes": ("lookup_edit", *RETURN_TOTAL_EDIT),
+    "mutable-indexes": ("lookup_edit", *RETURN_TOTAL_EDIT),
+    "computed-indexes": ("lookup_edit", *RETURN_TOTAL_EDIT),
+    "text-computed-indexes": ("lookup_edit", *RETURN_TOTAL_EDIT),
+    "compound-indexes": ("compound_edit", *RETURN_TOTAL_EDIT),
     "generics": ("generic_call_edit", 'f0000("Ada")', 'f0000("four")'),
     "captures": ("capture_call_edit", "read(7)", "read(8)"),
     "aliases": ("alias_leaf_edit", "typealias A0 = Int", "typealias A0 = Float"),

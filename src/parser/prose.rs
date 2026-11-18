@@ -34,13 +34,7 @@ impl Parser<'_> {
                 if indentation(&self.source_lines[next]).0 <= parent {
                     break;
                 }
-                if !paragraph.is_empty() {
-                    statements.push(Statement {
-                        line: start,
-                        kind: StatementKind::Text(prose_template(&paragraph, 0, start).map_err(|e| self.error(e))?),
-                    });
-                    paragraph.clear();
-                }
+                self.flush_prose_paragraph(&mut paragraph, start, &mut statements)?;
                 statements.push(Statement {
                     line: self.line(),
                     kind: StatementKind::ParagraphBreak,
@@ -59,37 +53,11 @@ impl Parser<'_> {
                     self.line_index += 1;
                     continue;
                 }
-                if !paragraph.is_empty() {
-                    statements.push(Statement {
-                        line: start,
-                        kind: StatementKind::Text(prose_template(&paragraph, 0, start).map_err(|e| self.error(e))?),
-                    });
-                    paragraph.clear();
-                }
+                self.flush_prose_paragraph(&mut paragraph, start, &mut statements)?;
                 statements.push(self.parse_statement()?);
                 continue;
             }
-            let mut width = (parent + 1) * 4;
-            let mut offset = 0;
-            let mut residual = 0;
-            for ch in raw.chars() {
-                if width == 0 {
-                    break;
-                }
-                let n = if ch == '\t' {
-                    4
-                } else if ch == ' ' {
-                    1
-                } else {
-                    break;
-                };
-                offset += ch.len_utf8();
-                if n > width {
-                    residual = n - width;
-                    break;
-                }
-                width -= n;
-            }
+            let (content, residual) = prose_content(raw, (parent + 1) * 4);
             if paragraph.is_empty() {
                 start = self.line()
             } else {
@@ -97,22 +65,56 @@ impl Parser<'_> {
                 paragraph.push('\n')
             }
             literals
-                .scan_template_line(&raw[offset..])
+                .scan_template_line(content)
                 .map_err(|error| self.error(error))?;
             paragraph.push_str(&" ".repeat(residual));
-            paragraph.push_str(&raw[offset..]);
+            paragraph.push_str(content);
             self.line_index += 1;
         }
-        if !paragraph.is_empty() {
-            statements.push(Statement {
-                line: start,
-                kind: StatementKind::Text(prose_template(&paragraph, 0, start).map_err(|e| self.error(e))?),
-            });
-        }
+        self.flush_prose_paragraph(&mut paragraph, start, &mut statements)?;
         self.block_depth -= 1;
         if statements.is_empty() {
             return Err(self.error("prose block requires content"));
         }
         Ok(statements)
     }
+
+    fn flush_prose_paragraph(
+        &self,
+        paragraph: &mut String,
+        start: usize,
+        statements: &mut Vec<Statement>,
+    ) -> Result<(), ParseError> {
+        if !paragraph.is_empty() {
+            statements.push(Statement {
+                line: start,
+                kind: StatementKind::Text(prose_template(paragraph, 0, start).map_err(|error| self.error(error))?),
+            });
+            paragraph.clear();
+        }
+        Ok(())
+    }
+}
+
+/// Remove structural indentation while preserving a tab's unused alignment spaces.
+fn prose_content(raw: &str, mut width: usize) -> (&str, usize) {
+    let mut offset = 0;
+    let mut residual = 0;
+    for ch in raw.chars() {
+        if width == 0 {
+            break;
+        }
+        let columns = match ch {
+            '\t' => 4,
+            ' ' => 1,
+            _ => break,
+        };
+        offset += ch.len_utf8();
+        if columns > width {
+            residual = columns - width;
+            break;
+        }
+        width -= columns;
+    }
+    (&raw[offset..], residual)
 }

@@ -75,6 +75,82 @@ pub(super) fn conditional(
     Ok(reaches)
 }
 
+/// Preserve effects along failed alternatives before forming the successful branch join.
+fn matching_paths(
+    subject: &Option<Expr>,
+    case: &WhenCase,
+    scope: &mut ScopeStack,
+    mut reaches: bool,
+    stable: &mut bool,
+    analysis: &mut Inference,
+) -> Result<(Vec<ScopeStack>, bool), String> {
+    let mut matches = Vec::new();
+    if !case.fallback {
+        for pattern in &case.patterns {
+            if let Pattern::Value(value) | Pattern::Membership { value, .. } = pattern {
+                if reaches {
+                    reaches = expression_returns(value, scope, analysis)?;
+                }
+                *stable &= pure_expression(value);
+            }
+            let known = match pattern {
+                Pattern::Value(value) => {
+                    if let Some(subject) = subject {
+                        constant_comparison("==", subject, value)
+                    } else {
+                        constant_boolean(value)
+                    }
+                }
+                _ => None,
+            };
+            if reaches && known != Some(false) {
+                let mut success = scope.clone();
+                if let Pattern::Value(value) = pattern
+                    && subject.is_none()
+                {
+                    narrow_condition(value, &mut success, true);
+                }
+                matches.push(success);
+            }
+            reaches &= known != Some(true);
+            if let Pattern::Value(value) = pattern
+                && subject.is_none()
+            {
+                narrow_condition(value, scope, false);
+            }
+        }
+    } else if reaches {
+        matches.push(scope.clone());
+    }
+    Ok((matches, reaches))
+}
+
+/// A failed guard continues case selection with its effects and false-path facts.
+fn guard_returns(
+    guard: Option<&Expr>,
+    branch: &mut ScopeStack,
+    outer_depth: usize,
+    unmatched: &mut Vec<ScopeStack>,
+    analysis: &mut Inference,
+    stable: &mut bool,
+) -> Result<bool, String> {
+    let Some(guard) = guard else {
+        return Ok(true);
+    };
+    let mut reaches = expression_returns(guard, branch, analysis)?;
+    *stable &= pure_expression(guard);
+    let known = constant_boolean(guard);
+    if reaches && known != Some(true) {
+        let mut failed = branch.clone();
+        failed.truncate(outer_depth);
+        narrow_condition(guard, &mut failed, false);
+        unmatched.push(failed);
+    }
+    reaches &= known != Some(false);
+    narrow_condition(guard, branch, true);
+    Ok(reaches)
+}
+
 pub(super) fn when_statement(
     subject: &Option<Expr>,
     binding: &Option<String>,
@@ -111,46 +187,8 @@ pub(super) fn when_statement(
         if !stable {
             invalidate_narrowing(&mut scope);
         }
-        let mut reaches = remaining.is_some();
-        let mut matches = Vec::new();
         let bindings = case_bindings(case, subject_type.as_ref())?;
-        if !case.fallback {
-            for pattern in &case.patterns {
-                if let Pattern::Value(value) | Pattern::Membership { value, .. } = pattern {
-                    if reaches {
-                        reaches = expression_returns(value, &mut scope, analysis)?;
-                    }
-                    stable &= pure_expression(value);
-                }
-                let known = match pattern {
-                    Pattern::Value(value) => {
-                        if let Some(subject) = subject {
-                            constant_comparison("==", subject, value)
-                        } else {
-                            constant_boolean(value)
-                        }
-                    }
-                    _ => None,
-                };
-                if reaches && known != Some(false) {
-                    let mut success = scope.clone();
-                    if let Pattern::Value(value) = pattern
-                        && subject.is_none()
-                    {
-                        narrow_condition(value, &mut success, true);
-                    }
-                    matches.push(success);
-                }
-                reaches &= known != Some(true);
-                if let Pattern::Value(value) = pattern
-                    && subject.is_none()
-                {
-                    narrow_condition(value, &mut scope, false);
-                }
-            }
-        } else if reaches {
-            matches.push(scope.clone());
-        }
+        let (matches, reaches) = matching_paths(subject, case, &mut scope, remaining.is_some(), &mut stable, analysis)?;
         let mut unmatched = Vec::new();
         if !case.fallback && reaches {
             unmatched.push(scope);
@@ -166,20 +204,14 @@ pub(super) fn when_statement(
             if case.fallback && null_covered {
                 super::super::flow::narrow_when_remainder(binding.as_deref(), original, &mut branch);
             }
-            let mut body_reaches = true;
-            if let Some(guard) = &case.guard {
-                body_reaches = expression_returns(guard, &mut branch, analysis)?;
-                stable &= pure_expression(guard);
-                let known = constant_boolean(guard);
-                if body_reaches && known != Some(true) {
-                    let mut failed = branch.clone();
-                    failed.truncate(base.len());
-                    narrow_condition(guard, &mut failed, false);
-                    unmatched.push(failed);
-                }
-                body_reaches &= known != Some(false);
-                narrow_condition(guard, &mut branch, true);
-            }
+            let body_reaches = guard_returns(
+                case.guard.as_ref(),
+                &mut branch,
+                base.len(),
+                &mut unmatched,
+                analysis,
+                &mut stable,
+            )?;
             if body_reaches {
                 if let Some(values) = values.as_deref_mut() {
                     values.record(&case.body, &branch, analysis)?;
