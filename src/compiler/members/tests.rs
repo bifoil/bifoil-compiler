@@ -1,5 +1,215 @@
-//! Built-in method admission exposes mutators only on the appropriate family.
+//! Member lookup preserves nominal ownership, constructor identity and collection views.
 use super::*;
+use crate::model::{FieldDef, TypeDef};
+use std::collections::BTreeMap;
+
+fn signature(id: &str, result: Type) -> Signature {
+    Arc::new(SignatureData {
+        id: id.into(),
+        result,
+        generics: vec![],
+        params: vec![].into(),
+        suspend: false,
+        scene: false,
+    })
+}
+
+fn binding(runtime: &str, callables: Vec<Signature>) -> Binding {
+    Binding {
+        identity: super::super::bindings::Identity::new(),
+        index_key: false,
+        global_aliases: None,
+        volatile: false,
+        implicit_receiver: false,
+        escaped: false,
+        runtime: runtime.into(),
+        ty: callables.first().map_or(Type::Int, |s| s.ty()),
+        mutable: false,
+        initialized: true,
+        may_be_initialized: true,
+        owner: "members-test".into(),
+        narrow: None,
+        field_narrows: Default::default(),
+        callables,
+        requires: Default::default(),
+        callable_requirements: BTreeMap::new(),
+    }
+}
+
+fn definition(kind: &str) -> TypeDef {
+    TypeDef {
+        parameters: vec![],
+        field_order: vec![],
+        kind: kind.into(),
+        fields: BTreeMap::new(),
+        methods: BTreeMap::new(),
+        private_methods: vec![],
+        parent: None,
+        variants: vec![],
+    }
+}
+
+fn member(receiver: Expr, name: &str) -> Expr {
+    Expr::Member {
+        receiver: Box::new(receiver),
+        name: name.into(),
+        safe: false,
+        line: 1,
+    }
+}
+
+#[test]
+fn function_fields_and_methods_retain_distinct_targets_and_static_admission() {
+    let _session = crate::declarations::AnalysisSession::enter();
+    let receiver = Type::named("Box", vec![]);
+    let method = signature("Box.run", Type::Int);
+    let callback = signature("callback", Type::Unit).ty();
+    let mut data = definition("data");
+    data.fields.insert(
+        "callback".into(),
+        FieldDef {
+            ty: callback.clone(),
+            mutable: false,
+            private: false,
+        },
+    );
+    data.methods.insert("run".into(), vec![method.clone()]);
+    crate::declarations::install(BTreeMap::from([("Box".into(), Arc::new(data))]));
+    assert_eq!(member_type(&receiver, "callback").unwrap(), callback);
+    assert_eq!(member_type(&receiver, "run").unwrap(), method.ty());
+    assert_eq!(resolved_member_target(&receiver, "callback"), None);
+    assert_eq!(resolved_member_target(&receiver, "run").as_deref(), Some("Box.run"));
+
+    let mut env = vec![Arc::new(rpds::RedBlackTreeMapSync::new_sync())];
+    super::super::insert(&mut env, "Box.run", binding("Box.run", vec![method])).unwrap();
+    let method_path = member(Expr::Name("Box".into()), "run");
+    assert!(static_symbol(&method_path, &env).is_none());
+    assert!(
+        check_static_receiver(&method_path, &env)
+            .unwrap_err()
+            .contains("requires a receiver")
+    );
+    let bound = Expr::BoundReference(Box::new(Expr::Name("Box".into())), "run".into(), 1);
+    assert!(check_static_receiver(&bound, &env).is_err());
+    assert!(static_symbol(&member(Expr::Int(1), "run"), &env).is_none());
+}
+
+#[test]
+fn constructor_member_checks_require_the_declared_constructor_identity() {
+    let _session = crate::declarations::AnalysisSession::enter();
+    let mut data = definition("data");
+    data.fields.insert(
+        "value".into(),
+        FieldDef {
+            ty: Type::Int,
+            mutable: false,
+            private: false,
+        },
+    );
+    crate::declarations::install(BTreeMap::from([
+        ("Box".into(), Arc::new(data)),
+        ("Tag".into(), Arc::new(definition("variant"))),
+    ]));
+    let mut env = vec![Arc::new(rpds::RedBlackTreeMapSync::new_sync())];
+    for (name, signature) in [
+        ("Box", signature("Box", Type::named("Box", vec![]))),
+        ("factory", signature("factory", Type::named("Box", vec![]))),
+        ("scalar", signature("scalar", Type::Int)),
+        ("Missing", signature("Missing", Type::named("Missing", vec![]))),
+        ("Tag", signature("Tag", Type::named("Tag", vec![]))),
+    ] {
+        // The absent declaration deliberately exercises lookup before type validation.
+        Arc::make_mut(env.last_mut().unwrap()).insert_mut(name.into(), binding(name, vec![signature]));
+    }
+    assert!(constructor_has_member(&Expr::Name("Box".into()), "value", &env));
+    for receiver in [
+        Expr::Reference("Box".into()),
+        Expr::Name("factory".into()),
+        Expr::Name("scalar".into()),
+        Expr::Name("Missing".into()),
+        Expr::Name("Tag".into()),
+        Expr::Name("unbound".into()),
+    ] {
+        assert!(!constructor_has_member(&receiver, "value", &env));
+    }
+    assert!(check_static_receiver(&member(Expr::Name("Box".into()), "value"), &env).is_err());
+    assert!(check_static_receiver(&member(Expr::Name("factory".into()), "value"), &env).is_ok());
+}
+
+#[test]
+fn enum_shorthand_requires_a_real_import_and_preserves_qualified_case_identity() {
+    let _session = crate::declarations::AnalysisSession::enter();
+    let mut palette = definition("enum");
+    palette.variants = vec!["Palette.Red".into()];
+    let mut payload = definition("variant");
+    payload.fields.insert(
+        "value".into(),
+        FieldDef {
+            ty: Type::Int,
+            mutable: false,
+            private: false,
+        },
+    );
+    crate::declarations::install(BTreeMap::from([
+        ("Palette".into(), Arc::new(palette)),
+        ("Empty".into(), Arc::new(definition("variant"))),
+        ("Payload".into(), Arc::new(payload)),
+    ]));
+    let expected = Type::named("Palette", vec![]);
+    let red = binding("Palette.Red", vec![signature("Palette.Red", expected.clone())]);
+    let mut env = vec![Arc::new(rpds::RedBlackTreeMapSync::new_sync())];
+    assert!(
+        enum_shorthand("Red", &env, Some(&expected))
+            .err()
+            .unwrap()
+            .contains("not imported")
+    );
+    super::super::insert(&mut env, "Alias", red.clone()).unwrap();
+    assert_eq!(
+        enum_shorthand("Red", &env, Some(&expected)).unwrap().unwrap().runtime,
+        "Palette.Red"
+    );
+    assert!(constant_case(&red));
+    assert!(constant_case(&binding(
+        "Empty",
+        vec![signature("Empty", Type::named("Empty", vec![]))]
+    )));
+    assert!(!constant_case(&binding(
+        "other",
+        vec![signature("other", Type::named("Empty", vec![]))]
+    )));
+    assert!(!constant_case(&binding(
+        "Red",
+        vec![signature("Red", expected.clone())]
+    )));
+    assert!(!constant_case(&binding("value", vec![signature("value", Type::Int)])));
+    let payload_type = Type::named("Payload", vec![]);
+    assert!(!constant_case(&binding(
+        "factory",
+        vec![signature("factory", payload_type.clone())]
+    )));
+    let mut constructor = signature("Payload", payload_type);
+    Arc::make_mut(&mut constructor).params = vec![Param {
+        name: "value".into(),
+        ty: Type::Int,
+        mutable: false,
+        default: false,
+        vararg: false,
+    }]
+    .into();
+    assert!(!constant_case(&binding("Payload", vec![constructor])));
+    assert!(constant_case_type(&binding("value", vec![]), None).is_err());
+    for ty in [Type::named("Missing", vec![]), Type::Int] {
+        assert!(enum_shorthand("Red", &env, Some(&ty)).unwrap().is_none());
+    }
+    super::super::insert(&mut env, "Red", binding("local", vec![])).unwrap();
+    assert!(
+        enum_shorthand("Red", &env, Some(&expected))
+            .err()
+            .unwrap()
+            .contains("conflicts")
+    );
+}
 
 #[test]
 fn coverage_builtin_collection_methods_preserve_family_mutability_and_result_shapes() {

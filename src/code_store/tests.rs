@@ -13,6 +13,164 @@ fn module(name: &str) -> Module {
     )
     .unwrap()
 }
+
+#[test]
+fn pending_transfers_refuse_resident_instructions_without_consuming_stored_bodies() {
+    let mut input = module("resident");
+    let expected = serde_json::to_vec(&input).unwrap();
+    let resident = input.clone();
+    let mut pending = CodeStore::default();
+    pending.record_pending(&mut input, Instant::now()).unwrap();
+    let instructions = pending.instructions;
+    let mut completed = CodeStore::default();
+    assert!(
+        completed
+            .copy_pending_from(&mut pending, &resident.functions, Instant::now())
+            .unwrap_err()
+            .contains("pending function already has instructions")
+    );
+    assert!(
+        completed
+            .transfer_pending(
+                &mut pending,
+                &resident.functions,
+                Instant::now(),
+                |_| true,
+                |_, _| panic!("resident instructions must be rejected before dependency analysis"),
+            )
+            .unwrap_err()
+            .contains("pending function already has instructions")
+    );
+    assert!(
+        pending
+            .discard_pending(&resident, Instant::now())
+            .unwrap_err()
+            .contains("pending function already has instructions")
+    );
+    let mut resident = resident;
+    assert!(
+        pending
+            .restore_pending(&mut resident, Instant::now())
+            .unwrap_err()
+            .contains("pending function already has instructions")
+    );
+    assert!(completed.entries.is_empty());
+    assert_eq!(completed.instructions, 0);
+    assert_eq!(pending.instructions, instructions);
+    pending.restore_pending(&mut input, Instant::now()).unwrap();
+    assert_eq!(serde_json::to_vec(&input).unwrap(), expected);
+}
+
+#[test]
+fn restored_headers_reject_changed_signatures_flags_and_recorded_lengths() {
+    let mut input = module("restore_guard");
+    let mut store = CodeStore::default();
+    store.record_pending(&mut input, Instant::now()).unwrap();
+    let header = &input.functions["restore_guard.answer"];
+    for field in ["signature", "init", "local"] {
+        let mut changed = header.clone();
+        match field {
+            "signature" => Arc::make_mut(&mut changed.signature).result = crate::model::Type::Float,
+            "init" => changed.init = !changed.init,
+            "local" => changed.local = !changed.local,
+            _ => unreachable!(),
+        }
+        assert!(
+            store
+                .read_checked("restore_guard.answer", &changed)
+                .unwrap_err()
+                .contains("stored function header changed")
+        );
+    }
+    let mut location = store.entries.get("restore_guard.answer").unwrap().unwrap().into_owned();
+    location.instructions += 1;
+    store.entries.replace("restore_guard.answer", location).unwrap();
+    assert!(
+        store
+            .read_checked("restore_guard.answer", header)
+            .unwrap_err()
+            .contains("stored function header changed")
+    );
+}
+
+#[test]
+fn impossible_spool_lengths_are_rejected_before_reading_or_allocating_the_record() {
+    let mut input = module("length_guard");
+    let mut store = CodeStore::default();
+    store.record_pending(&mut input, Instant::now()).unwrap();
+    let mut location = store.entries.get("length_guard.answer").unwrap().unwrap().into_owned();
+    location.length = crate::model::MAX_ARTIFACT * 4 + 1;
+    store.entries.replace("length_guard.answer", location).unwrap();
+    assert!(
+        store
+            .encoded("length_guard.answer")
+            .err()
+            .unwrap()
+            .contains("canonical data size budget exceeded")
+    );
+}
+
+#[test]
+fn native_spool_creation_preserves_colliding_files_and_reports_missing_directories() {
+    const CASE: &str = "BIFOIL_TEST_CODE_STORE_CREATION_CASE";
+    if let Ok(case) = std::env::var(CASE) {
+        let mut store = CodeStore::default();
+        if case == "collision" {
+            let previous = std::env::temp_dir().join(format!("bifoil-code-{}-0.tmp", std::process::id()));
+            fs::write(&previous, "preexisting unrelated temporary file").unwrap();
+            store.open().unwrap();
+            assert_eq!(
+                fs::read_to_string(&previous).unwrap(),
+                "preexisting unrelated temporary file"
+            );
+            assert_ne!(store.path.as_ref().unwrap(), &previous);
+        } else {
+            assert_eq!(case, "missing-directory");
+            assert!(store.open().unwrap_err().contains("cannot create temporary code store"));
+            assert!(store.path.is_none());
+        }
+        return;
+    }
+    let directory = std::env::temp_dir().join(format!(
+        "bifoil-code-creation-contract-{}-{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir(&directory).unwrap();
+    struct OwnedDirectory(PathBuf);
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _owned = OwnedDirectory(directory.clone());
+    for case in ["collision", "missing-directory"] {
+        let temporary = if case == "collision" {
+            directory.clone()
+        } else {
+            directory.join("absent/nested")
+        };
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "code_store::tests::native_spool_creation_preserves_colliding_files_and_reports_missing_directories",
+                "--test-threads=1",
+            ])
+            .env(CASE, case)
+            .env("TMPDIR", &temporary)
+            .env("TMP", &temporary)
+            .env("TEMP", &temporary)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{case}: {}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed; 0 failed"));
+    }
+}
 #[test]
 fn code_storage_preserves_canonical_module_bytes_and_allows_later_appends() {
     let mut first = module("first");
