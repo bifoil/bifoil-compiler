@@ -266,6 +266,12 @@ upstream ChoiceScript. No release, remote, license selection, or third-party rel
 
 ## Sonar analysis
 
+The Sonar workflow requires at least **80% coverage in every production source file**, using covered executable lines
+and condition outcomes from the configured reports. The comparison uses exact counts; project averages and rounded
+percentages cannot hide a failing file. Missing coverage or test evidence fails the check. Files without executable
+Sonar coverage locations retain their separately verified compilation or command-test evidence and report `N/A`.
+This per-file floor is additional to the 100% overall/new condition requirement and the existing issue-count limits.
+
 [SonarQube Cloud](https://sonarcloud.io/dashboard?id=bifoil_bifoil-compiler) analyzes this public repository. [Scanner
 settings](sonar-project.properties) separate original production sources from tests. Run the standard `sonar-scanner`
 with `SONAR_TOKEN` supplied through the environment; never save a token in source or command arguments. Scanner output

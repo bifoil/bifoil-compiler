@@ -54,7 +54,7 @@ jobs:
           .bifoil/development/sonar/dependencies/choicescript/web/scene.js
       - name: Check Clippy and export its findings
         run: cargo clippy --locked --all-targets --message-format=json -- -D warnings > .bifoil/development/sonar/clippy.jsonl
-      - name: Require test evidence for each production source file
+      - name: Require tests and at least 80% coverage for each production source file
         run: |
           python3 - <<'PY'
           """Require measured test execution in every analyzed production source file."""
@@ -92,7 +92,10 @@ jobs:
           covered = set()
           reported = set()
 
-          def record(name, hits):
+          line_coverage = {}
+          branch_coverage = {}
+
+          def record(name, lines, branches=()):
               path = Path(name)
               if path.is_absolute():
                   if not path.is_relative_to(root):
@@ -100,8 +103,34 @@ jobs:
                   name = path.relative_to(root).as_posix()
               name = name.replace("\\", "/")
               reported.add(name)
-              if hits:
+              measured = line_coverage.setdefault(name, {})
+              for number, hits in lines:
+                  if number <= 0 or hits < 0:
+                      raise SystemExit("Invalid executable-line counts: " + name)
+                  measured[number] = measured.get(number, False) or hits > 0
+              if any(measured.values()):
                   covered.add(name)
+              outcomes = branch_coverage.setdefault(name, {})
+              for number, hit, total in branches:
+                  if number <= 0 or not 0 <= hit <= total:
+                      raise SystemExit("Invalid condition counts: " + name)
+                  if number in outcomes and outcomes[number] != (hit, total):
+                      raise SystemExit("Conflicting condition reports: " + name)
+                  outcomes[number] = (hit, total)
+
+          def xml_branches(lines, number_key):
+              for line in lines:
+                  if line.attrib.get("branch") == "true" and "condition-coverage" not in line.attrib:
+                      raise SystemExit("Missing exact condition counts")
+                  if "condition-coverage" in line.attrib:
+                      match = re.search(r"\((\d+)/(\d+)\)$", line.attrib["condition-coverage"])
+                      if match is None:
+                          raise SystemExit("Missing exact condition counts")
+                      hit, total = map(int, match.groups())
+                  else:
+                      hit = int(line.attrib.get("coveredBranches", "0"))
+                      total = int(line.attrib.get("branchesToCover", "0"))
+                  yield int(line.attrib[number_key]), hit, total
 
           for key in ("sonar.javascript.lcov.reportPaths", "sonar.rust.lcov.reportPaths"):
               for name in patterns(key):
@@ -109,7 +138,27 @@ jobs:
                   for block in text.split("end_of_record"):
                       file = re.search(r"^SF:([^\r\n]+)", block, re.M)
                       if file:
-                          record(file[1], any(int(value) > 0 for value in re.findall(r"^DA:\d+,(\d+)", block, re.M)))
+                          lines = [(int(number), int(hits)) for number, hits in
+                                   re.findall(r"^DA:(\d+),(-?\d+)(?:,[^,\r\n]+)?$", block, re.M)]
+                          if len(lines) != sum(row.startswith("DA:") for row in block.splitlines()):
+                              raise SystemExit("Malformed LCOV executable-line counts")
+                          if sum(row.startswith("SF:") for row in block.splitlines()) != 1:
+                              raise SystemExit("An LCOV record must identify one source")
+                          conditions = {}
+                          positions = set()
+                          for number, group, branch, hits in re.findall(r"^BRDA:(\d+),([^,]+),([^,]+),([^\r\n]+)", block, re.M):
+                              position = (number, group, branch)
+                              if position in positions:
+                                  raise SystemExit("Duplicate LCOV condition")
+                              positions.add(position)
+                              count = 0 if hits == "-" else int(hits)
+                              if count < 0:
+                                  raise SystemExit("Invalid LCOV condition count")
+                              hit, total = conditions.get(int(number), (0, 0))
+                              conditions[int(number)] = (hit + (count > 0), total + 1)
+                          if len(positions) != sum(row.startswith("BRDA:") for row in block.splitlines()):
+                              raise SystemExit("Malformed LCOV condition counts")
+                          record(file[1], lines, [(number, hit, total) for number, (hit, total) in conditions.items()])
           for name in patterns("sonar.python.coverage.reportPaths"):
               document = XML.parse(root / name).getroot()
               bases = [element.text or "" for element in document.findall("./sources/source")]
@@ -119,7 +168,35 @@ jobs:
                   selected = next((path for path in candidates if (root / path).is_file()), None)
                   if selected is None:
                       raise SystemExit("Unresolvable coverage source: " + filename)
-                  record(str(selected), any(int(line.attrib["hits"]) > 0 for line in item.findall("./lines/line")))
+                  lines = item.findall("./lines/line")
+                  record(str(selected), [(int(line.attrib["number"]), int(line.attrib["hits"])) for line in lines],
+                         xml_branches(lines, "number"))
+          go_sources = {}
+
+          def go_executable_lines(name, first, first_column, last, last_column):
+              # Match the Go importer's treatment of boundary braces and blank lines.
+              if name not in go_sources:
+                  go_sources[name] = (root / name).read_text().split("\n")
+              source = go_sources[name]
+              def boundary(line, column):
+                  if not 1 <= line <= len(source) or column <= 0:
+                      return False
+                  text = source[line - 1]
+                  return column > len(text) or text[column - 1] in "{}" or ord(text[column - 1]) < 32
+              while boundary(first, first_column):
+                  first_column += 1
+                  if first_column > len(source[first - 1]):
+                      first, first_column = first + 1, 1
+              if last > len(source):
+                  last, last_column = len(source), len(source[-1]) + 1
+              last_column -= 1
+              while last > first and boundary(last, last_column):
+                  last_column -= 1
+                  if last_column == 0:
+                      last -= 1
+                      last_column = len(source[last - 1])
+              return [number for number in range(first, last + 1) if source[number - 1].strip()]
+
           for name in patterns("sonar.go.coverage.reportPaths"):
               module = re.search(r"^module\s+(\S+)", (root / "go.mod").read_text(), re.M)[1]
               rows = (root / name).read_text().splitlines()
@@ -127,20 +204,37 @@ jobs:
                   raise SystemExit("Invalid Go coverage header")
               for row in rows[1:]:
                   location, statements, hits = row.split()
-                  file = location.rsplit(":", 1)[0]
-                  if int(statements) < 0 or int(hits) < 0:
+                  file, coordinates = location.rsplit(":", 1)
+                  match = re.fullmatch(r"([1-9]\d*)\.([1-9]\d*),([1-9]\d*)\.([1-9]\d*)", coordinates)
+                  if match is None or int(statements) < 0 or int(hits) < 0:
                       raise SystemExit("Invalid Go coverage counters")
-                  record(file.removeprefix(module + "/"), int(hits) > 0)
+                  start, column, end, end_column = map(int, match.groups())
+                  if (start, column) > (end, end_column):
+                      raise SystemExit("Invalid Go coverage range")
+                  filename = file.removeprefix(module + "/")
+                  lines = go_executable_lines(filename, start, column, end, end_column)
+                  record(filename, [(number, int(hits)) for number in lines])
           for name in patterns("sonar.coverageReportPaths"):
               for item in XML.parse(root / name).getroot().findall("file"):
-                  record(item.attrib["path"], any(line.attrib["covered"] == "true" for line in item.findall("lineToCover")))
+                  lines = item.findall("lineToCover")
+                  if any(line.attrib["covered"] not in {"true", "false"} for line in lines):
+                      raise SystemExit("Invalid generic line coverage")
+                  record(item.attrib["path"], [(int(line.attrib["lineNumber"]), line.attrib["covered"] == "true") for line in lines],
+                         xml_branches(lines, "lineNumber"))
           for name in patterns("sonar.coverage.jacoco.xmlReportPaths"):
               for package in XML.parse(root / name).getroot().findall("package"):
                   for item in package.findall("sourcefile"):
                       suffix = package.attrib["name"] + "/" + item.attrib["name"]
-                      for candidate in sources:
-                          if candidate.endswith(suffix):
-                              record(candidate, any(int(line.attrib["ci"]) > 0 for line in item.findall("line")))
+                      candidates = [candidate for candidate in sources if candidate.endswith(suffix)]
+                      if len(candidates) != 1:
+                          raise SystemExit("Ambiguous or missing JaCoCo source: " + suffix)
+                      lines = item.findall("line")
+                      for line in lines:
+                          if any(int(line.attrib[key]) < 0 for key in ("mi", "ci", "mb", "cb")):
+                              raise SystemExit("Invalid JaCoCo coverage counts")
+                      record(candidates[0], [(int(line.attrib["nr"]), int(line.attrib["ci"])) for line in lines],
+                             [(int(line.attrib["nr"]), int(line.attrib["cb"]),
+                               int(line.attrib["cb"]) + int(line.attrib["mb"])) for line in lines])
           if not sources:
               raise SystemExit("No production source files selected; refusing an empty test check")
           mapping = root / "source-test-map.json"
@@ -178,7 +272,21 @@ jobs:
           for name in missing:
               print(("UNTESTED " if name in reported else "UNMEASURED ") + name)
           print(f"Test evidence verified for {len(sources - set(missing))}/{len(sources)} production source files")
-          if missing:
+          below_minimum = []
+          for name in sorted(sources - set(missing)):
+              lines = line_coverage.get(name, {})
+              branches = branch_coverage.get(name, {})
+              hit = sum(lines.values()) + sum(value[0] for value in branches.values())
+              total = len(lines) + sum(value[1] for value in branches.values())
+              if total == 0:
+                  print("N/A " + name + ": no executable Sonar coverage locations; test evidence verified")
+                  continue
+              # Use exact counts; a displayed 80.00% must never hide a lower result.
+              passed = 100 * hit >= 80 * total
+              print(f"{'COVERED' if passed else 'LOW COVERAGE'} {name}: {100 * hit / total:.2f}% ({hit}/{total}); required >=80%")
+              if not passed:
+                  below_minimum.append(name)
+          if missing or below_minimum:
               raise SystemExit(1)
           PY
       - name: Authenticate this project through GitHub OIDC
