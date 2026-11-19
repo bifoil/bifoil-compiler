@@ -103,9 +103,9 @@ pub(super) fn options(
             if !ty.within_depth(32) {
                 return Err(Failure::Budget.to_string());
             }
-            if !types.contains(&ty) {
-                types.push(ty);
-            }
+            // Prefixes are unique key/value slots. A fixed family and mutability
+            // preserve that identity when constructing the final named type.
+            types.push(ty);
         }
         return Ok(types);
     }

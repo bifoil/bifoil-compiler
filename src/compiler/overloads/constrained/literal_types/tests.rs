@@ -45,6 +45,32 @@ fn collection_hints_preserve_family_and_choose_only_complete_mutability_contexts
     ] {
         assert_eq!(options(&literal, &env, &[], Some(&hint), 0).unwrap(), vec![expected]);
     }
+    assert_eq!(
+        options(
+            &collection("Set", false, vec![(None, Expr::Int(3))]),
+            &env,
+            &[],
+            Some(&Type::Pending),
+            0,
+        )
+        .unwrap(),
+        vec![Type::named("Set", vec![Type::Int])]
+    );
+    assert_eq!(
+        options(
+            &collection(
+                "Map",
+                false,
+                vec![(Some(Expr::String("Original".into())), Expr::Int(3))]
+            ),
+            &env,
+            &[],
+            Some(&Type::Pending),
+            0,
+        )
+        .unwrap(),
+        vec![Type::named("Map", vec![Type::String, Type::Int])]
+    );
     let parameter = Type::Parameter {
         name: "T".into(),
         nonnull: false,
@@ -90,12 +116,14 @@ fn malformed_and_unstable_literal_slots_cannot_become_callable_candidates() {
         suspend: false,
         vararg: false,
     };
-    let hint = Type::named("Map", vec![callable, Type::Int]);
-    assert!(
-        options(&collection("Map", false, vec![]), &env, &[], Some(&hint), 0)
-            .unwrap()
-            .is_empty()
-    );
+    for key in [callable, Type::Any] {
+        let hint = std::hint::black_box(Type::named("Map", vec![key, Type::Int]));
+        assert!(
+            options(&collection("Map", false, vec![]), &env, &[], Some(&hint), 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 #[test]
@@ -150,4 +178,27 @@ fn literal_traversal_and_constructed_types_keep_their_existing_depth_limits() {
         options(&collection("List", false, vec![]), &env, &[], Some(&hint), 0).unwrap_err(),
         Failure::Budget.to_string()
     );
+}
+
+#[test]
+fn converging_literal_joins_share_one_candidate_without_collapsing_distinct_keys() {
+    let prefixes = vec![
+        Slots {
+            key: Some(Type::String),
+            value: Some(Type::Int),
+        },
+        Slots {
+            key: Some(Type::String),
+            value: Some(Type::Float),
+        },
+        Slots {
+            key: Some(Type::Char),
+            value: Some(Type::Float),
+        },
+    ];
+    let values = extend(prefixes, &[Type::Float], false).unwrap();
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[0].key, Some(Type::String));
+    assert_eq!(values[1].key, Some(Type::Char));
+    assert!(values.iter().all(|slots| slots.value == Some(Type::Float)));
 }
